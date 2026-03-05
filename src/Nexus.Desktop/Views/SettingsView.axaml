@@ -1,0 +1,67 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Nexus.Desktop.Views.SettingsView">
+
+    <DockPanel>
+        <Border DockPanel.Dock="Top" Padding="16,12" BorderThickness="0,0,0,1" BorderBrush="#313244">
+            <TextBlock Text="Settings" FontSize="18" FontWeight="SemiBold" />
+        </Border>
+
+        <ScrollViewer>
+            <StackPanel Margin="24,16" Spacing="24" MaxWidth="600">
+
+                <!-- Local Model -->
+                <StackPanel Spacing="12">
+                    <TextBlock Text="Local Model (Ollama)" FontWeight="SemiBold" FontSize="14" />
+                    <Grid ColumnDefinitions="140,*" RowDefinitions="Auto,Auto">
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Model:" VerticalAlignment="Center" />
+                        <ComboBox Grid.Row="0" Grid.Column="1"
+                                  ItemsSource="{Binding AvailableLocalModels}"
+                                  SelectedItem="{Binding LocalModel}" />
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Endpoint:" VerticalAlignment="Center" Margin="0,8,0,0" />
+                        <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding LocalEndpoint}" Margin="0,8,0,0" />
+                    </Grid>
+                </StackPanel>
+
+                <!-- Cloud Model -->
+                <StackPanel Spacing="12">
+                    <TextBlock Text="Cloud Model" FontWeight="SemiBold" FontSize="14" />
+                    <Grid ColumnDefinitions="140,*" RowDefinitions="Auto,Auto,Auto">
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Provider:" VerticalAlignment="Center" />
+                        <ComboBox Grid.Row="0" Grid.Column="1"
+                                  ItemsSource="{Binding AvailableCloudProviders}"
+                                  SelectedItem="{Binding CloudProvider}" />
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Model:" VerticalAlignment="Center" Margin="0,8,0,0" />
+                        <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding CloudModel}" Margin="0,8,0,0" />
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="API Key:" VerticalAlignment="Center" Margin="0,8,0,0" />
+                        <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding CloudApiKey}"
+                                 PasswordChar="*" Margin="0,8,0,0" />
+                    </Grid>
+                </StackPanel>
+
+                <!-- Memory -->
+                <StackPanel Spacing="12">
+                    <TextBlock Text="Memory Settings" FontWeight="SemiBold" FontSize="14" />
+                    <Grid ColumnDefinitions="200,*" RowDefinitions="Auto">
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Decay Lambda (0.01-0.5):" VerticalAlignment="Center" />
+                        <NumericUpDown Grid.Row="0" Grid.Column="1"
+                                       Value="{Binding DecayLambda}"
+                                       Minimum="0.01" Maximum="0.5" Increment="0.01"
+                                       FormatString="F2" />
+                    </Grid>
+                </StackPanel>
+
+                <!-- Save -->
+                <StackPanel Spacing="8">
+                    <Button Content="Save Settings" Command="{Binding SaveSettingsCommand}"
+                            HorizontalAlignment="Left" Padding="16,8" />
+                    <TextBlock Text="{Binding StatusMessage}" Opacity="0.7" FontSize="12" />
+                </StackPanel>
+
+            </StackPanel>
+        </ScrollViewer>
+    </DockPanel>
+</UserControl>

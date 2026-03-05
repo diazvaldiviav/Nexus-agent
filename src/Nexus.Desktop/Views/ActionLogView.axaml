@@ -1,0 +1,34 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Nexus.Desktop.ViewModels"
+             x:Class="Nexus.Desktop.Views.ActionLogView">
+
+    <DockPanel>
+        <Border DockPanel.Dock="Top" Padding="16,12" BorderThickness="0,0,0,1" BorderBrush="#313244">
+            <DockPanel>
+                <TextBlock Text="Action Log" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8">
+                    <ComboBox ItemsSource="{Binding ActionTypes}"
+                              SelectedItem="{Binding FilterType}"
+                              Width="150" />
+                    <Button Content="Refresh" Command="{Binding LoadActionsCommand}" />
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <DataGrid ItemsSource="{Binding Actions}"
+                  IsReadOnly="True"
+                  GridLinesVisibility="Horizontal"
+                  AutoGenerateColumns="False">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp}" Width="180" />
+                <DataGridTextColumn Header="Action" Binding="{Binding ActionType}" Width="120" />
+                <DataGridTextColumn Header="Model" Binding="{Binding ModelUsed}" Width="150" />
+                <DataGridTextColumn Header="Tokens In" Binding="{Binding TokensIn}" Width="80" />
+                <DataGridTextColumn Header="Tokens Out" Binding="{Binding TokensOut}" Width="80" />
+                <DataGridTextColumn Header="Duration (ms)" Binding="{Binding DurationMs}" Width="100" />
+                <DataGridTextColumn Header="Detail" Binding="{Binding Detail}" Width="*" />
+            </DataGrid.Columns>
+        </DataGrid>
+    </DockPanel>
+</UserControl>

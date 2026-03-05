@@ -1,0 +1,36 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Nexus.Desktop.ViewModels"
+             xmlns:controls="using:Nexus.Desktop.Controls"
+             x:Class="Nexus.Desktop.Views.MemoryGraphView">
+
+    <DockPanel>
+        <!-- Header -->
+        <Border DockPanel.Dock="Top" Padding="16,12" BorderThickness="0,0,0,1" BorderBrush="#313244">
+            <DockPanel>
+                <TextBlock Text="Memory Graph" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8">
+                    <ComboBox ItemsSource="{Binding EntityTypes}"
+                              SelectedItem="{Binding SelectedEntityType}"
+                              Width="150" />
+                    <Button Content="Refresh" Command="{Binding LoadGraphCommand}" />
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- Selected node detail panel -->
+        <Border DockPanel.Dock="Right" Width="250" Padding="12"
+                BorderThickness="1,0,0,0" BorderBrush="#313244"
+                IsVisible="{Binding SelectedNode, Converter={x:Static ObjectConverters.IsNotNull}}">
+            <StackPanel Spacing="8">
+                <TextBlock Text="Entity Details" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding SelectedNodeDetails}" TextWrapping="Wrap" FontSize="12" />
+            </StackPanel>
+        </Border>
+
+        <!-- Graph canvas -->
+        <controls:GraphCanvas Nodes="{Binding Nodes}"
+                              Edges="{Binding Edges}"
+                              SelectedNode="{Binding SelectedNode, Mode=TwoWay}" />
+    </DockPanel>
+</UserControl>

@@ -1,2 +1,7 @@
-﻿// See https://aka.ms/new-console-template for more information
-Console.WriteLine("Hello, World!");
+using Avalonia;
+using Nexus.Desktop;
+
+AppBuilder.Configure<App>()
+    .UsePlatformDetect()
+    .LogToTrace()
+    .StartWithClassicDesktopLifetime(args);
