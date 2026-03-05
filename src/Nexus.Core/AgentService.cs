@@ -30,6 +30,10 @@ public class AgentService
     private readonly ModelRouter _modelRouter;
     private readonly EntityExtractor _entityExtractor;
     private readonly ILogger<AgentService>? _logger;
+    private static readonly System.Net.Http.HttpClient _httpClient = new()
+    {
+        Timeout = TimeSpan.FromSeconds(120)
+    };
     private readonly List<ConversationMessage> _conversationHistory = new();
 
     public AgentService(
@@ -120,9 +124,6 @@ public class AgentService
         var endpoint = modelConfig.Endpoint ?? "http://localhost:11434";
         var url = $"{endpoint}/api/chat";
 
-        using var client = new System.Net.Http.HttpClient();
-        client.Timeout = TimeSpan.FromSeconds(120);
-
         var request = new
         {
             model = modelConfig.Model,
@@ -137,7 +138,7 @@ public class AgentService
         var json = System.Text.Json.JsonSerializer.Serialize(request);
         var content = new System.Net.Http.StringContent(json, System.Text.Encoding.UTF8, "application/json");
 
-        var httpResponse = await client.PostAsync(url, content, cancellationToken);
+        var httpResponse = await _httpClient.PostAsync(url, content, cancellationToken);
         httpResponse.EnsureSuccessStatusCode();
 
         var responseJson = await httpResponse.Content.ReadAsStringAsync(cancellationToken);

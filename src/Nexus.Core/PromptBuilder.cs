@@ -35,19 +35,19 @@ public class PromptBuilder
 
         var languageName = LanguageNames.TryGetValue(_agentConfig.Language, out var name) ? name : "English";
 
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine($"You are {_agentConfig.Name}, a personal AI agent with persistent memory.");
-        sb.AppendLine($"You remember the user's projects, people, decisions and preferences over time.");
-        sb.AppendLine($"Always respond in {languageName}.");
-        sb.AppendLine();
+        var builder = new System.Text.StringBuilder();
+        builder.AppendLine($"You are {_agentConfig.Name}, a personal AI agent with persistent memory.");
+        builder.AppendLine($"You remember the user's projects, people, decisions and preferences over time.");
+        builder.AppendLine($"Always respond in {languageName}.");
+        builder.AppendLine();
 
         if (!string.IsNullOrWhiteSpace(memorySection))
         {
-            sb.AppendLine("# Your Memory");
-            sb.AppendLine(memorySection);
+            builder.AppendLine("# Your Memory");
+            builder.AppendLine(memorySection);
         }
 
-        return sb.ToString();
+        return builder.ToString();
     }
 
     public string BuildEntityExtractionPrompt(string conversationText)
