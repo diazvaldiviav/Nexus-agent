@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Nexus.CLI/Nexus.CLI.csproj" />
+    <Project Path="src/Nexus.Connectors/Nexus.Connectors.csproj" />
+    <Project Path="src/Nexus.Core/Nexus.Core.csproj" />
+    <Project Path="src/Nexus.Desktop/Nexus.Desktop.csproj" />
+    <Project Path="src/Nexus.Memory/Nexus.Memory.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Nexus.Core.Tests/Nexus.Core.Tests.csproj" />
+    <Project Path="tests/Nexus.Integration.Tests/Nexus.Integration.Tests.csproj" />
+    <Project Path="tests/Nexus.Memory.Tests/Nexus.Memory.Tests.csproj" />
+  </Folder>
+</Solution>

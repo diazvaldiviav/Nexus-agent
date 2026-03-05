@@ -1,0 +1,52 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Nexus.Desktop.ViewModels"
+             x:Class="Nexus.Desktop.Views.ChatView">
+
+    <DockPanel>
+        <!-- Header -->
+        <Border DockPanel.Dock="Top" Padding="16,12" BorderThickness="0,0,0,1" BorderBrush="#313244">
+            <DockPanel>
+                <TextBlock Text="Chat" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <Button DockPanel.Dock="Right" Content="Clear" Command="{Binding ClearHistoryCommand}"
+                        Margin="0,0,0,0" Padding="8,4" />
+                <TextBlock DockPanel.Dock="Right" Text="{Binding StatusText}"
+                           VerticalAlignment="Center" Opacity="0.6" FontSize="12" Margin="0,0,12,0" />
+            </DockPanel>
+        </Border>
+
+        <!-- Input area -->
+        <Border DockPanel.Dock="Bottom" Padding="16,12" BorderThickness="0,1,0,0" BorderBrush="#313244">
+            <Grid ColumnDefinitions="*,Auto">
+                <TextBox Grid.Column="0"
+                         Text="{Binding InputText, Mode=TwoWay}"
+                         Watermark="Type your message..."
+                         AcceptsReturn="False"
+                         Margin="0,0,8,0" />
+                <Button Grid.Column="1"
+                        Content="Send"
+                        Command="{Binding SendCommand}"
+                        IsEnabled="{Binding !IsProcessing}" />
+            </Grid>
+        </Border>
+
+        <!-- Messages list -->
+        <ScrollViewer>
+            <ItemsControl ItemsSource="{Binding Messages}" Margin="16,8">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:ChatMessage">
+                        <Border Margin="0,4" Padding="12,8" CornerRadius="8" Background="#313244">
+                            <StackPanel>
+                                <TextBlock Text="{Binding Role}" FontSize="10" FontWeight="Bold"
+                                           Opacity="0.5" Margin="0,0,0,4" />
+                                <TextBlock Text="{Binding Content}" TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding ModelInfo}" FontSize="10" Opacity="0.6"
+                                           IsVisible="{Binding !IsUser}" Margin="0,4,0,0" />
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </DockPanel>
+</UserControl>

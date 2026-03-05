@@ -1,0 +1,46 @@
+agent:
+  name: "Nexus"
+  language: "en"
+
+models:
+  local:
+    provider: ollama
+    model: qwen2.5:14b
+    endpoint: http://localhost:11434
+  cloud:
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    api_key: ${NEXUS_CLOUD_API_KEY}
+  routing:
+    entity_extraction: local
+    interaction_summary: local
+    entity_resolution: local
+    memory_query_response: local
+    complex_reasoning: cloud
+    code_generation: cloud
+    default: local
+
+embeddings:
+  provider: ollama
+  model: nomic-embed-text
+  endpoint: http://localhost:11434
+  dimensions: 768
+
+memory:
+  database: ~/.nexus/memory.db
+  working_memory_max_tokens: 1000
+  relevant_memory_max_tokens: 3000
+  max_retrieval_nodes: 20
+  relevance_decay_lambda: 0.05
+  working_threshold_score: 0.7
+  working_threshold_mentions: 3
+  archive_threshold_score: 0.05
+  archive_threshold_days: 90
+
+mcp:
+  servers: []
+
+ui:
+  theme: fluent
+  graph_layout: force-directed
+  default_view: chat
