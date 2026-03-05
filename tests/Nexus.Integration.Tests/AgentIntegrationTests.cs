@@ -1,0 +1,75 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Nexus.Core;
+using Nexus.Core.Config;
+using Nexus.Memory;
+using Xunit;
+
+namespace Nexus.Integration.Tests;
+
+/// <summary>
+/// Integration tests that verify the interaction between Core, Memory, and the agent service.
+/// </summary>
+public class AgentIntegrationTests : IDisposable
+{
+    private readonly string _dbPath;
+    private readonly IServiceProvider _services;
+
+    public AgentIntegrationTests()
+    {
+        _dbPath = Path.Combine(Path.GetTempPath(), $"nexus_integration_{Guid.NewGuid():N}.db");
+
+        var config = new NexusConfig
+        {
+            Memory = new MemoryConfig { Database = _dbPath }
+        };
+
+        var services = new ServiceCollection();
+        services.AddLogging(b => b.SetMinimumLevel(LogLevel.Warning));
+        services.AddNexusAgent(config);
+        _services = services.BuildServiceProvider();
+    }
+
+    [Fact]
+    public void ServiceProvider_ShouldResolveAgentService()
+    {
+        var agentService = _services.GetService<AgentService>();
+        Assert.NotNull(agentService);
+    }
+
+    [Fact]
+    public void ServiceProvider_ShouldResolveKnowledgeGraph()
+    {
+        var graph = _services.GetService<KnowledgeGraph>();
+        Assert.NotNull(graph);
+    }
+
+    [Fact]
+    public void ServiceProvider_ShouldResolveModelRouter()
+    {
+        var router = _services.GetService<ModelRouter>();
+        Assert.NotNull(router);
+    }
+
+    [Fact]
+    public async Task KnowledgeGraph_ShouldBeInitializedAndUsable()
+    {
+        var graph = _services.GetRequiredService<KnowledgeGraph>();
+        var entities = await graph.GetAllEntitiesAsync();
+        Assert.NotNull(entities);
+    }
+
+    [Fact]
+    public void AgentService_ShouldStartWithEmptyHistory()
+    {
+        var agent = _services.GetRequiredService<AgentService>();
+        Assert.Empty(agent.ConversationHistory);
+    }
+
+    public void Dispose()
+    {
+        if (File.Exists(_dbPath))
+            File.Delete(_dbPath);
+        (_services as IDisposable)?.Dispose();
+    }
+}
