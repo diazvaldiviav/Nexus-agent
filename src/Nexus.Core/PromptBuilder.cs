@@ -6,6 +6,19 @@ namespace Nexus.Core;
 
 public class PromptBuilder
 {
+    private static readonly Dictionary<string, string> LanguageNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["en"] = "English",
+        ["es"] = "Spanish",
+        ["fr"] = "French",
+        ["de"] = "German",
+        ["it"] = "Italian",
+        ["pt"] = "Portuguese",
+        ["zh"] = "Chinese",
+        ["ja"] = "Japanese",
+        ["ko"] = "Korean",
+    };
+
     private readonly MemoryContextBuilder _memoryContextBuilder;
     private readonly AgentConfig _agentConfig;
 
@@ -20,10 +33,12 @@ public class PromptBuilder
         var context = await _memoryContextBuilder.BuildContextAsync(userQuery, queryEmbedding);
         var memorySection = _memoryContextBuilder.FormatContextAsPrompt(context);
 
+        var languageName = LanguageNames.TryGetValue(_agentConfig.Language, out var name) ? name : "English";
+
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"You are {_agentConfig.Name}, a personal AI agent with persistent memory.");
         sb.AppendLine($"You remember the user's projects, people, decisions and preferences over time.");
-        sb.AppendLine($"Always respond in {(_agentConfig.Language == "es" ? "Spanish" : "English")}.");
+        sb.AppendLine($"Always respond in {languageName}.");
         sb.AppendLine();
 
         if (!string.IsNullOrWhiteSpace(memorySection))
