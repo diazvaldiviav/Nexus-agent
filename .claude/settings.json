@@ -1,0 +1,81 @@
+{
+  "project": {
+    "name": "Barmade",
+    "type": "Multi-platform Restaurant Management & Ordering App",
+    "framework": "Flutter 3.24+ (multi-platform: Android, iOS, Web)",
+    "language": "Dart 3.8+",
+    "state_management": "Provider (ChangeNotifier)",
+    "backend": "Firebase Auth + Firestore + Spring Boot 3.5 REST API",
+    "api_client": "Dio (singleton with interceptors)",
+    "payments": "Stripe (flutter_stripe)",
+    "localization": "flutter_localizations + ARB (5 languages: en, es, fr, pt, zh)",
+    "deployment": "Play Store / App Store / Firebase Hosting (web)",
+    "vcs": "Git + GitLab"
+  },
+  "agents": {
+    "planning_team": [
+      "requirements-analyst",
+      "architect",
+      "architecture-validator"
+    ],
+    "execution_team": [
+      "developer",
+      "code-reviewer"
+    ],
+    "qa_team": [
+      "tester",
+      "debugger"
+    ]
+  },
+  "skills": {
+    "shared": [
+      "project-knowledge",
+      "coding-standards",
+      "solid-principles",
+      "testing-strategies",
+      "design-patterns",
+      "flutter-known-bugs"
+    ],
+    "orchestrator": "sprint-orchestrator"
+  },
+  "quality_gates": {
+    "test_coverage_minimum": 80,
+    "max_retries_per_story": 2,
+    "max_concurrent_tasks": 3,
+    "task_timeout_minutes": 10,
+    "require_dart_analysis_clean": true,
+    "require_dart_format_pass": true,
+    "require_all_tests_pass": true,
+    "require_flutter_build": true,
+    "require_localization_complete": true
+  },
+  "paths": {
+    "lib": "Frontend/lib",
+    "screens": "Frontend/lib/component/screens",
+    "services": "Frontend/lib/services",
+    "models": "Frontend/lib/firebaseModel",
+    "widgets": "Frontend/lib/component/widgets",
+    "providers": "Frontend/lib/providers",
+    "api": "Frontend/lib/api",
+    "l10n": "Frontend/lib/l10n",
+    "tests": "Frontend/test"
+  },
+  "conventions": {
+    "screen_suffix": "*Screen with _*ScreenState",
+    "service_suffix": "*Service",
+    "singleton_pattern": "GlobalCartService",
+    "encryption": "AES via services/encryption.dart",
+    "employee_auth": "Temporary 12-char passwords, owner login screen detection"
+  },
+  "commands": {
+    "install": "flutter pub get",
+    "analyze": "flutter analyze",
+    "format": "dart format --set-exit-if-changed .",
+    "test": "flutter test",
+    "test_coverage": "flutter test --coverage",
+    "build_apk": "flutter build apk",
+    "build_web": "flutter build web",
+    "gen_l10n": "flutter gen-l10n",
+    "run_web": "flutter run -d chrome"
+  }
+}

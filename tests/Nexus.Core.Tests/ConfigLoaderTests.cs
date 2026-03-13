@@ -33,7 +33,7 @@ public class ConfigLoaderTests : IDisposable
             Agent = new AgentConfig { Name = "TestAgent", Language = "es" },
             Models = new ModelsConfig
             {
-                Local = new ModelProviderConfig { Model = "qwen2.5:7b" }
+                Local = new ModelProviderConfig { Model = "qwen3:8b" }
             }
         };
 
@@ -42,7 +42,7 @@ public class ConfigLoaderTests : IDisposable
 
         Assert.Equal("TestAgent", loaded.Agent.Name);
         Assert.Equal("es", loaded.Agent.Language);
-        Assert.Equal("qwen2.5:7b", loaded.Models.Local.Model);
+        Assert.Equal("qwen3:8b", loaded.Models.Local.Model);
     }
 
     [Fact]
@@ -53,6 +53,35 @@ public class ConfigLoaderTests : IDisposable
 
         Assert.DoesNotContain("~", path);
         Assert.Contains(".nexus", path);
+    }
+
+    [Fact]
+    public void Save_ThenLoad_EmbeddingsApiKey_RoundTripsCorrectly()
+    {
+        // Arrange
+        var configPath = Path.Combine(_tempDir, "nexus_apikey.yaml");
+        var original = new NexusConfig
+        {
+            Embeddings = new EmbeddingsConfig
+            {
+                Provider = "openai",
+                Model = "text-embedding-3-small",
+                Endpoint = "https://api.openai.com",
+                Dimensions = 1536,
+                ApiKey = "sk-test-round-trip-key"
+            }
+        };
+
+        // Act
+        ConfigLoader.Save(original, configPath);
+        var loaded = ConfigLoader.Load(configPath);
+
+        // Assert
+        Assert.Equal("openai", loaded.Embeddings.Provider);
+        Assert.Equal("text-embedding-3-small", loaded.Embeddings.Model);
+        Assert.Equal("https://api.openai.com", loaded.Embeddings.Endpoint);
+        Assert.Equal(1536, loaded.Embeddings.Dimensions);
+        Assert.Equal("sk-test-round-trip-key", loaded.Embeddings.ApiKey);
     }
 
     public void Dispose()

@@ -1,3 +1,4 @@
+using Microsoft.Data.Sqlite;
 using Nexus.Memory;
 using Nexus.Memory.Models;
 using Xunit;
@@ -65,6 +66,8 @@ public class RelevanceDecayTests : IDisposable
 
     public void Dispose()
     {
+        GC.SuppressFinalize(this);
+        SqliteConnection.ClearAllPools();
         if (File.Exists(_dbPath))
             File.Delete(_dbPath);
     }

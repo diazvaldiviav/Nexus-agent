@@ -1,3 +1,4 @@
+using Microsoft.Data.Sqlite;
 using Nexus.Memory;
 using Nexus.Memory.Models;
 using Xunit;
@@ -132,7 +133,7 @@ public class KnowledgeGraphTests : IDisposable
         var action = new AgentAction
         {
             ActionType = "chat",
-            ModelUsed = "ollama/qwen2.5:14b",
+            ModelUsed = "ollama/qwen3:14b",
             TokensIn = 100,
             TokensOut = 200,
             DurationMs = 500
@@ -157,6 +158,8 @@ public class KnowledgeGraphTests : IDisposable
 
     public void Dispose()
     {
+        GC.SuppressFinalize(this);
+        SqliteConnection.ClearAllPools();
         if (File.Exists(_dbPath))
             File.Delete(_dbPath);
     }

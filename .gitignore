@@ -69,3 +69,8 @@ artifacts/
 
 # Package cache
 packages/
+nexus.yaml
+.claude/settings.local.json
+
+# Docs (except README.md at root)
+docs/

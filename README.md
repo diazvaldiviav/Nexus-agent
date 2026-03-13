@@ -54,7 +54,7 @@ Nexus Agent is an open-source personal AI assistant that maintains a **persisten
 
 - [.NET 9 SDK](https://dotnet.microsoft.com/download)
 - [Ollama](https://ollama.ai) with models:
-  - `ollama pull qwen2.5:14b` (or `qwen2.5:7b` for 8GB RAM)
+  - `ollama pull qwen3:14b` (or `qwen3:8b` for 8GB RAM)
   - `ollama pull nomic-embed-text`
 - (Optional) API key for Anthropic/OpenAI/Google for cloud model routing
 
@@ -121,7 +121,7 @@ dotnet test
 | Component | Technology |
 |-----------|------------|
 | Runtime | .NET 9 |
-| LLM (local) | Ollama + Qwen 2.5:14b |
+| LLM (local) | Ollama + Qwen 3:14b |
 | LLM (cloud) | Anthropic / OpenAI / Google |
 | Database | SQLite (Microsoft.Data.Sqlite) |
 | Desktop UI | Avalonia UI 11.x |

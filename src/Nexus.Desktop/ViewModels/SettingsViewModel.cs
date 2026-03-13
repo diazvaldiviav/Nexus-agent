@@ -10,7 +10,7 @@ public partial class SettingsViewModel : ObservableObject
     private readonly NexusConfig _config;
 
     [ObservableProperty] private string _localProvider = "ollama";
-    [ObservableProperty] private string _localModel = "qwen2.5:14b";
+    [ObservableProperty] private string _localModel = "qwen3:14b";
     [ObservableProperty] private string _localEndpoint = "http://localhost:11434";
     [ObservableProperty] private string _cloudProvider = "anthropic";
     [ObservableProperty] private string _cloudModel = "claude-sonnet-4-5-20250929";
@@ -20,7 +20,7 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private string _statusMessage = string.Empty;
 
     public ObservableCollection<string> AvailableLocalModels { get; } = new(
-        new[] { "qwen2.5:14b", "qwen2.5:7b", "llama3.2:3b", "mistral:7b", "phi3:mini" });
+        new[] { "qwen3:14b", "qwen3:8b", "llama3.2:3b", "mistral:7b", "phi3:mini" });
 
     public ObservableCollection<string> AvailableCloudProviders { get; } = new(
         new[] { "anthropic", "openai", "google" });

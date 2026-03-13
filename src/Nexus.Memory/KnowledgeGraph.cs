@@ -51,6 +51,23 @@ public class KnowledgeGraph
         return null;
     }
 
+    public async Task<Entity?> GetEntityByNameAsync(
+        string name,
+        CancellationToken cancellationToken = default)
+    {
+        using var conn = new SqliteConnection(_connectionString);
+        await conn.OpenAsync(cancellationToken);
+
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT * FROM entities WHERE LOWER(name) = LOWER($name) LIMIT 1";
+        cmd.Parameters.AddWithValue("$name", name);
+
+        using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        if (await reader.ReadAsync(cancellationToken))
+            return MapEntity(reader);
+        return null;
+    }
+
     public async Task<List<Entity>> GetEntitiesByTypeAsync(EntityType type)
     {
         using var conn = new SqliteConnection(_connectionString);

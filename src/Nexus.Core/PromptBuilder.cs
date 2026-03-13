@@ -28,9 +28,9 @@ public class PromptBuilder
         _agentConfig = agentConfig;
     }
 
-    public async Task<string> BuildSystemPromptAsync(string userQuery, float[]? queryEmbedding = null)
+    public async Task<string> BuildSystemPromptAsync(string userQuery, CancellationToken cancellationToken = default)
     {
-        var context = await _memoryContextBuilder.BuildContextAsync(userQuery, queryEmbedding);
+        var context = await _memoryContextBuilder.BuildContextAsync(userQuery, cancellationToken);
         var memorySection = _memoryContextBuilder.FormatContextAsPrompt(context);
 
         var languageName = LanguageNames.TryGetValue(_agentConfig.Language, out var name) ? name : "English";
@@ -38,7 +38,7 @@ public class PromptBuilder
         var builder = new System.Text.StringBuilder();
         builder.AppendLine($"You are {_agentConfig.Name}, a personal AI agent with persistent memory.");
         builder.AppendLine($"You remember the user's projects, people, decisions and preferences over time.");
-        builder.AppendLine($"Always respond in {languageName}.");
+        builder.AppendLine($"IMPORTANT: Always respond in the same language the user is writing in. Match their language exactly.");
         builder.AppendLine();
 
         if (!string.IsNullOrWhiteSpace(memorySection))
@@ -52,17 +52,28 @@ public class PromptBuilder
 
     public string BuildEntityExtractionPrompt(string conversationText)
     {
-        return $"""
-            Extract named entities from the following conversation text.
-            Return a JSON object with an "entities" array. Each entity should have:
-            - "name": the entity name
-            - "type": one of [person, project, technology, decision, date, preference, other]
-            - "summary": a brief description (1-2 sentences)
+        return $$"""
+            Extract named entities and their relationships from the following conversation.
+            Return ONLY a valid JSON object with this exact structure:
+
+            {
+              "entities": [
+                {"name": "EntityName", "type": "person|project|technology|decision|date|preference|other", "summary": "Brief description"}
+              ],
+              "relations": [
+                {"entity1": "EntityName1", "entity2": "EntityName2", "type": "descriptive_relation_type"}
+              ]
+            }
+
+            Rules:
+            - IMPORTANT: ALL output MUST be in English regardless of the conversation language. Entity names, types, summaries, and relation types must all be in English.
+            - Return ONLY valid JSON. No markdown code blocks, no explanation text.
+            - Relation types should be descriptive lowercase strings (e.g., "works_on", "uses", "decided_to").
+            - Only include relations where both entities appear in the entities array.
+            - Entity names must be proper nouns or specific terms, not generic words.
 
             Conversation:
-            {conversationText}
-
-            Return only valid JSON, no explanation.
+            {{conversationText}}
             """;
     }
 
@@ -77,6 +88,7 @@ public class PromptBuilder
             Conversation:
             {conversationText}
 
+            IMPORTANT: Write the summary in English regardless of the conversation language.
             Return only the summary, no explanation.
             """;
     }

@@ -5,7 +5,7 @@ agent:
 models:
   local:
     provider: ollama
-    model: qwen2.5:14b
+    model: qwen3:14b
     endpoint: http://localhost:11434
   cloud:
     provider: anthropic
@@ -21,10 +21,11 @@ models:
     default: local
 
 embeddings:
-  provider: ollama
-  model: nomic-embed-text
+  provider: ollama          # ollama | openai
+  model: nomic-embed-text   # or text-embedding-3-small for openai
   endpoint: http://localhost:11434
   dimensions: 768
+  api_key: ${OPENAI_API_KEY}  # Required for openai provider. Or set OPENAI_API_KEY env var
 
 memory:
   database: ~/.nexus/memory.db

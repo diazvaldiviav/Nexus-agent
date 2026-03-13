@@ -26,7 +26,7 @@ public class ModelsConfig
 public class ModelProviderConfig
 {
     public string Provider { get; set; } = "ollama";
-    public string Model { get; set; } = "qwen2.5:14b";
+    public string Model { get; set; } = "qwen3:14b";
     public string? Endpoint { get; set; }
     public string? ApiKey { get; set; }
 }
@@ -48,6 +48,7 @@ public class EmbeddingsConfig
     public string Model { get; set; } = "nomic-embed-text";
     public string? Endpoint { get; set; }
     public int Dimensions { get; set; } = 768;
+    public string? ApiKey { get; set; }
 }
 
 public class MemoryConfig

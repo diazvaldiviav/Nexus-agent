@@ -9,7 +9,7 @@ var configPath = args.Length > 0 && args[0] == "--config" && args.Length > 1 ? a
 var config = ConfigLoader.Load(configPath);
 
 var services = new ServiceCollection();
-services.AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning));
+services.AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Error));
 services.AddNexusAgent(config);
 var sp = services.BuildServiceProvider();
 
@@ -53,7 +53,12 @@ static async Task RunChatAsync(IServiceProvider sp, NexusConfig config)
         var userInput = AnsiConsole.Ask<string>("[bold green]You>[/]");
         
         if (string.IsNullOrWhiteSpace(userInput)) continue;
-        if (userInput.ToLower() == "exit") break;
+        if (userInput.ToLower() == "exit")
+        {
+            AnsiConsole.MarkupLine("[dim]Saving pending entities...[/]");
+            await agentService.FlushPendingExtractionAsync();
+            break;
+        }
         if (userInput.ToLower() == "clear")
         {
             agentService.ClearHistory();
@@ -61,31 +66,58 @@ static async Task RunChatAsync(IServiceProvider sp, NexusConfig config)
             continue;
         }
 
-        await AnsiConsole.Status()
-            .Spinner(Spinner.Known.Dots)
-            .StartAsync("Thinking...", async ctx =>
-            {
-                try
-                {
-                    var response = await agentService.ChatAsync(userInput);
-                    
-                    AnsiConsole.WriteLine();
-                    AnsiConsole.Write(new Panel(new Markup(EscapeMarkup(response.Content)))
-                    {
-                        Header = new PanelHeader($"[bold blue]Nexus[/] [dim]({response.ModelUsed}, {response.DurationMs}ms)[/]"),
-                        Border = BoxBorder.Rounded
-                    });
+        try
+        {
+            AnsiConsole.WriteLine();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var firstToken = true;
 
-                    if (response.ExtractedEntities.Count > 0)
-                    {
-                        AnsiConsole.MarkupLine($"[dim]→ Remembered {response.ExtractedEntities.Count} {(response.ExtractedEntities.Count == 1 ? "entity" : "entities")}[/]");
-                    }
-                }
-                catch (Exception ex)
+            // Show spinner until first token arrives
+            var cts = new CancellationTokenSource();
+            var spinnerTask = Task.Run(async () =>
+            {
+                var frames = new[] { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+                var i = 0;
+                while (!cts.Token.IsCancellationRequested)
                 {
-                    AnsiConsole.MarkupLine($"[red]Error: {ex.Message}[/]");
+                    Console.Write($"\r[dim]{frames[i++ % frames.Length]} Thinking...[/]");
+                    try { await Task.Delay(80, cts.Token); } catch (OperationCanceledException) { break; }
                 }
             });
+
+            await foreach (var token in agentService.ChatStreamAsync(userInput,
+                onEntitiesExtracted: count =>
+                {
+                    AnsiConsole.MarkupLine($"[dim]  ✓ {count} entities extracted and saved to memory[/]");
+                }))
+            {
+                if (firstToken)
+                {
+                    cts.Cancel();
+                    await spinnerTask;
+                    Console.Write("\r                    \r");
+                    AnsiConsole.Markup("[bold blue]Nexus>[/] ");
+                    firstToken = false;
+                }
+                Console.Write(token);
+            }
+
+            if (firstToken)
+            {
+                cts.Cancel();
+                await spinnerTask;
+                Console.Write("\r                    \r");
+                AnsiConsole.Markup("[bold blue]Nexus>[/] ");
+            }
+
+            sw.Stop();
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine($"[dim]({config.Models.Local.Provider}/{config.Models.Local.Model}, {sw.ElapsedMilliseconds}ms) → Extracting entities in background...[/]");
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]Error: {ex.Message}[/]");
+        }
         
         AnsiConsole.WriteLine();
     }
@@ -111,6 +143,7 @@ static async Task RunMemoryCommandAsync(IServiceProvider sp, string[] args)
         table.AddColumn("Score");
         table.AddColumn("Level");
         table.AddColumn("Mentions");
+        table.AddColumn("Embed");
         table.AddColumn("Summary");
 
         foreach (var e in entities.Take(50))
@@ -124,12 +157,14 @@ static async Task RunMemoryCommandAsync(IServiceProvider sp, string[] args)
                 _ => "white"
             };
             
+            var hasEmbed = e.Embedding is not null && e.Embedding.Length > 0;
             table.AddRow(
                 $"[bold]{EscapeMarkup(e.Name)}[/]",
                 $"[{typeColor}]{e.Type}[/]",
                 $"{e.RelevanceScore:F2}",
                 e.MemoryLevel.ToString(),
                 e.MentionCount.ToString(),
+                hasEmbed ? "[green]yes[/]" : "[red]no[/]",
                 EscapeMarkup(e.TextSummary?[..Math.Min(50, e.TextSummary?.Length ?? 0)] ?? "-")
             );
         }
@@ -143,8 +178,10 @@ static async Task RunMemoryCommandAsync(IServiceProvider sp, string[] args)
         var relations = await graph.GetAllRelationsAsync();
         var actions = await graph.GetRecentActionsAsync(1000);
         
+        var withEmbeddings = entities.Count(e => e.Embedding is not null && e.Embedding.Length > 0);
         AnsiConsole.MarkupLine($"[bold]Memory Statistics[/]");
         AnsiConsole.MarkupLine($"  Entities: [bold]{entities.Count}[/]");
+        AnsiConsole.MarkupLine($"  With embeddings: [bold]{withEmbeddings}/{entities.Count}[/]");
         AnsiConsole.MarkupLine($"  Relations: [bold]{relations.Count}[/]");
         AnsiConsole.MarkupLine($"  Actions logged: [bold]{actions.Count}[/]");
         
