@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
-using Nexus.Memory;
+using Nexus.Memory.Graph;
+using Nexus.Memory.Infrastructure;
 using Nexus.Memory.Models;
 using Xunit;
 
@@ -154,6 +155,171 @@ public class KnowledgeGraphTests : IDisposable
         var actions = await _graph.GetRecentActionsAsync(5);
 
         Assert.Equal(5, actions.Count);
+    }
+
+    [Fact]
+    public async Task DeleteEntityAsync_RemovesEntityAndOrphanRelations()
+    {
+        // Arrange
+        var e1 = new Entity { Name = "ToDelete", Type = EntityType.Person, RelevanceScore = 1.0 };
+        var e2 = new Entity { Name = "Survivor", Type = EntityType.Project, RelevanceScore = 0.8 };
+        var e3 = new Entity { Name = "Bystander", Type = EntityType.Technology, RelevanceScore = 0.5 };
+        await _graph.AddEntityAsync(e1);
+        await _graph.AddEntityAsync(e2);
+        await _graph.AddEntityAsync(e3);
+
+        // Relations involving e1 (should be deleted)
+        await _graph.AddRelationAsync(new Relation
+        {
+            EntityId1 = e1.Id, EntityId2 = e2.Id, RelationType = "works_on"
+        });
+        await _graph.AddRelationAsync(new Relation
+        {
+            EntityId1 = e2.Id, EntityId2 = e1.Id, RelationType = "manages"
+        });
+
+        // Relation NOT involving e1 (should survive)
+        await _graph.AddRelationAsync(new Relation
+        {
+            EntityId1 = e2.Id, EntityId2 = e3.Id, RelationType = "uses"
+        });
+
+        // Act
+        await _graph.DeleteEntityAsync(e1.Id);
+
+        // Assert
+        Assert.Null(await _graph.GetEntityAsync(e1.Id));
+        Assert.NotNull(await _graph.GetEntityAsync(e2.Id));
+
+        var e1Relations = await _graph.GetRelationsForEntityAsync(e1.Id);
+        Assert.Empty(e1Relations);
+
+        var survivorRelations = await _graph.GetRelationsForEntityAsync(e2.Id);
+        Assert.Single(survivorRelations);
+        Assert.Equal("uses", survivorRelations[0].RelationType);
+    }
+
+    [Fact]
+    public async Task UpdateRelationEntityIdAsync_RePointsRelations()
+    {
+        // Arrange
+        var entityA = new Entity { Name = "EntityA", Type = EntityType.Person };
+        var entityB = new Entity { Name = "EntityB", Type = EntityType.Person };
+        var entityC = new Entity { Name = "EntityC", Type = EntityType.Project };
+        await _graph.AddEntityAsync(entityA);
+        await _graph.AddEntityAsync(entityB);
+        await _graph.AddEntityAsync(entityC);
+
+        // Relation where A is entity_id_1
+        await _graph.AddRelationAsync(new Relation
+        {
+            EntityId1 = entityA.Id, EntityId2 = entityC.Id, RelationType = "created"
+        });
+        // Relation where A is entity_id_2
+        await _graph.AddRelationAsync(new Relation
+        {
+            EntityId1 = entityC.Id, EntityId2 = entityA.Id, RelationType = "owned_by"
+        });
+
+        // Act
+        await _graph.UpdateRelationEntityIdAsync(entityA.Id, entityB.Id);
+
+        // Assert — A should have no relations, B should have both
+        var relationsForA = await _graph.GetRelationsForEntityAsync(entityA.Id);
+        Assert.Empty(relationsForA);
+
+        var relationsForB = await _graph.GetRelationsForEntityAsync(entityB.Id);
+        Assert.Equal(2, relationsForB.Count);
+        Assert.All(relationsForB, r =>
+            Assert.True(r.EntityId1 == entityB.Id || r.EntityId2 == entityB.Id));
+    }
+
+    [Fact]
+    public async Task GetEntitiesByLevelAsync_FiltersCorrectly()
+    {
+        // Arrange
+        await _graph.AddEntityAsync(new Entity
+        {
+            Name = "WorkingEntity", Type = EntityType.Person,
+            MemoryLevel = MemoryLevel.Working, RelevanceScore = 0.9
+        });
+        await _graph.AddEntityAsync(new Entity
+        {
+            Name = "HighRelevance", Type = EntityType.Project,
+            MemoryLevel = MemoryLevel.Working, RelevanceScore = 1.0
+        });
+        await _graph.AddEntityAsync(new Entity
+        {
+            Name = "ArchivedEntity", Type = EntityType.Technology,
+            MemoryLevel = MemoryLevel.Archive, RelevanceScore = 0.3
+        });
+        await _graph.AddEntityAsync(new Entity
+        {
+            Name = "RelevantEntity", Type = EntityType.Other,
+            MemoryLevel = MemoryLevel.Relevant, RelevanceScore = 0.7
+        });
+
+        // Act
+        var workingEntities = await _graph.GetEntitiesByLevelAsync(MemoryLevel.Working);
+
+        // Assert
+        Assert.Equal(2, workingEntities.Count);
+        Assert.All(workingEntities, e => Assert.Equal(MemoryLevel.Working, e.MemoryLevel));
+
+        // Verify ordered by relevance_score DESC
+        Assert.Equal("HighRelevance", workingEntities[0].Name);
+        Assert.Equal("WorkingEntity", workingEntities[1].Name);
+    }
+
+    [Fact]
+    public async Task DeleteInteraction_RemovesFromDb()
+    {
+        // Arrange
+        var interaction = new Interaction
+        {
+            Summary = "Test interaction to delete",
+            TokenCount = 100
+        };
+        await _graph.AddInteractionAsync(interaction);
+
+        // Verify it exists
+        var before = await _graph.GetRecentInteractionsAsync(100);
+        Assert.Single(before);
+
+        // Act
+        await _graph.DeleteInteractionAsync(interaction.Id);
+
+        // Assert
+        var after = await _graph.GetRecentInteractionsAsync(100);
+        Assert.Empty(after);
+    }
+
+    [Fact]
+    public async Task GetInteractionsOlderThan_FiltersCorrectly()
+    {
+        // Arrange — one old interaction and one recent
+        var oldInteraction = new Interaction
+        {
+            Summary = "Old interaction",
+            Timestamp = DateTime.UtcNow.AddDays(-30),
+            TokenCount = 50
+        };
+        var recentInteraction = new Interaction
+        {
+            Summary = "Recent interaction",
+            Timestamp = DateTime.UtcNow.AddDays(-1),
+            TokenCount = 50
+        };
+        await _graph.AddInteractionAsync(oldInteraction);
+        await _graph.AddInteractionAsync(recentInteraction);
+
+        // Act — cutoff at 7 days ago
+        var cutoff = DateTime.UtcNow.AddDays(-7);
+        var result = await _graph.GetInteractionsOlderThanAsync(cutoff);
+
+        // Assert — only old interaction returned
+        Assert.Single(result);
+        Assert.Equal("Old interaction", result[0].Summary);
     }
 
     public void Dispose()

@@ -1,3 +1,4 @@
+using Nexus.Memory.Embedding;
 using System.Net;
 using System.Text;
 using System.Text.Json;

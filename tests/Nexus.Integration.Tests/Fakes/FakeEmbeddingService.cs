@@ -1,4 +1,4 @@
-using Nexus.Memory;
+using Nexus.Memory.Abstractions;
 
 namespace Nexus.Integration.Tests.Fakes;
 

@@ -74,3 +74,6 @@ nexus.yaml
 
 # Docs (except README.md at root)
 docs/
+
+#txt files
+*.txt

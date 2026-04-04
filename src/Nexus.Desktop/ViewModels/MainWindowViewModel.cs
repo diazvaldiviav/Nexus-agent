@@ -45,6 +45,8 @@ public partial class MainWindowViewModel : ObservableObject
     public void NavigateToActionLog()
     {
         ActiveTab = "log";
-        CurrentView = _services.GetRequiredService<ActionLogViewModel>();
+        var vm = _services.GetRequiredService<ActionLogViewModel>();
+        CurrentView = vm;
+        _ = vm.LoadActionsAsync();
     }
 }

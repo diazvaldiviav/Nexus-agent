@@ -1,34 +1,85 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Nexus.Desktop.ViewModels"
-             x:Class="Nexus.Desktop.Views.ActionLogView">
+             xmlns:models="using:Nexus.Memory.Models"
+             x:Class="Nexus.Desktop.Views.ActionLogView"
+             Background="#1e1e2e">
 
     <DockPanel>
         <Border DockPanel.Dock="Top" Padding="16,12" BorderThickness="0,0,0,1" BorderBrush="#313244">
             <DockPanel>
-                <TextBlock Text="Action Log" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <TextBlock Text="Action Log" FontSize="18" FontWeight="SemiBold"
+                           VerticalAlignment="Center" Foreground="#cdd6f4" />
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8">
                     <ComboBox ItemsSource="{Binding ActionTypes}"
                               SelectedItem="{Binding FilterType}"
                               Width="150" />
-                    <Button Content="Refresh" Command="{Binding LoadActionsCommand}" />
+                    <Button Content="Refresh" Command="{Binding LoadActionsCommand}" IsEnabled="{Binding !IsLoading}" />
                 </StackPanel>
             </DockPanel>
         </Border>
 
-        <DataGrid ItemsSource="{Binding Actions}"
-                  IsReadOnly="True"
-                  GridLinesVisibility="Horizontal"
-                  AutoGenerateColumns="False">
-            <DataGrid.Columns>
-                <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp}" Width="180" />
-                <DataGridTextColumn Header="Action" Binding="{Binding ActionType}" Width="120" />
-                <DataGridTextColumn Header="Model" Binding="{Binding ModelUsed}" Width="150" />
-                <DataGridTextColumn Header="Tokens In" Binding="{Binding TokensIn}" Width="80" />
-                <DataGridTextColumn Header="Tokens Out" Binding="{Binding TokensOut}" Width="80" />
-                <DataGridTextColumn Header="Duration (ms)" Binding="{Binding DurationMs}" Width="100" />
-                <DataGridTextColumn Header="Detail" Binding="{Binding Detail}" Width="*" />
-            </DataGrid.Columns>
-        </DataGrid>
+        <ProgressBar DockPanel.Dock="Top" IsIndeterminate="True"
+                     IsVisible="{Binding IsLoading}" Height="2" />
+
+        <!-- Action log area -->
+        <Panel>
+            <!-- Empty state -->
+            <StackPanel IsVisible="{Binding !HasActions}"
+                        VerticalAlignment="Center" HorizontalAlignment="Center"
+                        Spacing="12" Margin="32">
+                <TextBlock Text="No Actions Recorded"
+                           FontSize="20" FontWeight="SemiBold"
+                           HorizontalAlignment="Center" Foreground="#cdd6f4" />
+                <TextBlock Text="Actions are logged as you chat with Nexus. Start a conversation to see entity extractions, summarizations, and other agent activities here."
+                           FontSize="13" HorizontalAlignment="Center"
+                           Foreground="#a6adc8" TextWrapping="Wrap"
+                           TextAlignment="Center" MaxWidth="400" />
+            </StackPanel>
+
+            <!-- Actions list: visible when actions exist -->
+            <ScrollViewer IsVisible="{Binding HasActions}">
+                <!-- Column headers -->
+                <DockPanel Margin="0">
+                    <Border DockPanel.Dock="Top" Background="#181825" Padding="12,8"
+                            BorderThickness="0,0,0,1" BorderBrush="#313244">
+                        <Grid ColumnDefinitions="160,100,140,70,70,80,*">
+                            <TextBlock Grid.Column="0" Text="Timestamp" FontWeight="SemiBold" FontSize="12" Foreground="#a6adc8" />
+                            <TextBlock Grid.Column="1" Text="Action" FontWeight="SemiBold" FontSize="12" Foreground="#a6adc8" />
+                            <TextBlock Grid.Column="2" Text="Model" FontWeight="SemiBold" FontSize="12" Foreground="#a6adc8" />
+                            <TextBlock Grid.Column="3" Text="In" FontWeight="SemiBold" FontSize="12" Foreground="#a6adc8" />
+                            <TextBlock Grid.Column="4" Text="Out" FontWeight="SemiBold" FontSize="12" Foreground="#a6adc8" />
+                            <TextBlock Grid.Column="5" Text="Duration" FontWeight="SemiBold" FontSize="12" Foreground="#a6adc8" />
+                            <TextBlock Grid.Column="6" Text="Detail" FontWeight="SemiBold" FontSize="12" Foreground="#a6adc8" />
+                        </Grid>
+                    </Border>
+
+                    <ItemsControl ItemsSource="{Binding Actions}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="models:AgentAction">
+                                <Border Padding="12,6" BorderThickness="0,0,0,1" BorderBrush="#313244">
+                                    <Grid ColumnDefinitions="160,100,140,70,70,80,*">
+                                        <TextBlock Grid.Column="0" Text="{Binding Timestamp, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}"
+                                                   FontSize="12" Foreground="#cdd6f4" />
+                                        <TextBlock Grid.Column="1" Text="{Binding ActionType}"
+                                                   FontSize="12" Foreground="#f9e2af" />
+                                        <TextBlock Grid.Column="2" Text="{Binding ModelUsed}"
+                                                   FontSize="12" Foreground="#89b4fa" />
+                                        <TextBlock Grid.Column="3" Text="{Binding TokensIn}"
+                                                   FontSize="12" Foreground="#cdd6f4" />
+                                        <TextBlock Grid.Column="4" Text="{Binding TokensOut}"
+                                                   FontSize="12" Foreground="#cdd6f4" />
+                                        <TextBlock Grid.Column="5" Text="{Binding DurationMs, StringFormat='{}{0}ms'}"
+                                                   FontSize="12" Foreground="#cdd6f4" />
+                                        <TextBlock Grid.Column="6" Text="{Binding Detail}"
+                                                   FontSize="12" Foreground="#a6adc8" TextTrimming="CharacterEllipsis" />
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </DockPanel>
+            </ScrollViewer>
+        </Panel>
     </DockPanel>
 </UserControl>

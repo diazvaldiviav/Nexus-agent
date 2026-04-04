@@ -1,5 +1,8 @@
 using Microsoft.Data.Sqlite;
 using Nexus.Memory.Models;
+using Nexus.Memory.Graph;
+using Nexus.Memory.Infrastructure;
+using Nexus.Memory.Processing;
 using Nexus.Memory.Tests.Fakes;
 
 namespace Nexus.Memory.Tests;

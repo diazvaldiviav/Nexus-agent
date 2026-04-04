@@ -2,8 +2,16 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Nexus.Core;
+using Nexus.Core.Abstractions;
+using Nexus.Core.Models;
+using Nexus.Core.Providers;
+using Nexus.Core.Services;
 using Nexus.Core.Config;
-using Nexus.Memory;
+using Nexus.Memory.Abstractions;
+using Nexus.Memory.Embedding;
+using Nexus.Memory.Graph;
+using Nexus.Memory.Infrastructure;
+using Nexus.Memory.Processing;
 using Xunit;
 
 namespace Nexus.Integration.Tests;
@@ -41,7 +49,7 @@ public class AgentIntegrationTests : IDisposable
     [Fact]
     public void ServiceProvider_ShouldResolveKnowledgeGraph()
     {
-        var graph = _services.GetService<KnowledgeGraph>();
+        var graph = _services.GetService<IKnowledgeGraph>();
         Assert.NotNull(graph);
     }
 
@@ -55,7 +63,7 @@ public class AgentIntegrationTests : IDisposable
     [Fact]
     public async Task KnowledgeGraph_ShouldBeInitializedAndUsable()
     {
-        var graph = _services.GetRequiredService<KnowledgeGraph>();
+        var graph = _services.GetRequiredService<IKnowledgeGraph>();
         var entities = await graph.GetAllEntitiesAsync();
         Assert.NotNull(entities);
     }

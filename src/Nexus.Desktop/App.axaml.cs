@@ -3,6 +3,7 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Nexus.Connectors;
 using Nexus.Core;
 using Nexus.Core.Config;
 using Nexus.Desktop.ViewModels;
@@ -26,11 +27,12 @@ public partial class App : Application
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning));
         serviceCollection.AddNexusAgent(config);
+        serviceCollection.AddNexusMcp();
         serviceCollection.AddSingleton<MainWindowViewModel>();
         serviceCollection.AddTransient<ChatViewModel>();
         serviceCollection.AddTransient<MemoryGraphViewModel>();
         serviceCollection.AddTransient<SettingsViewModel>();
-        serviceCollection.AddTransient<ActionLogViewModel>();
+        serviceCollection.AddSingleton<ActionLogViewModel>();
         Services = serviceCollection.BuildServiceProvider();
 
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)

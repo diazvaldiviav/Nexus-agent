@@ -9,13 +9,34 @@
         <Border DockPanel.Dock="Top" Padding="16,12" BorderThickness="0,0,0,1" BorderBrush="#313244">
             <DockPanel>
                 <TextBlock Text="Memory Graph" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
-                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8">
-                    <ComboBox ItemsSource="{Binding EntityTypes}"
-                              SelectedItem="{Binding SelectedEntityType}"
-                              Width="150" />
-                    <Button Content="Refresh" Command="{Binding LoadGraphCommand}" />
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                    <Button Content="Refresh" Command="{Binding LoadGraphCommand}" IsEnabled="{Binding !IsLoading}" />
                 </StackPanel>
             </DockPanel>
+        </Border>
+
+        <!-- Layout simulation progress -->
+        <ProgressBar DockPanel.Dock="Top" IsIndeterminate="True" Height="2" IsVisible="{Binding IsSimulating}" />
+
+        <!-- Entity type filters -->
+        <Border DockPanel.Dock="Top" Padding="16,8" BorderThickness="0,0,0,1" BorderBrush="#313244">
+            <StackPanel Orientation="Horizontal" Spacing="4">
+                <TextBlock Text="Filter:" VerticalAlignment="Center" Margin="0,0,8,0" FontSize="12" />
+                <Button Content="All" Command="{Binding SelectAllFiltersCommand}" FontSize="12" Padding="6,2" />
+                <Button Content="Clear" Command="{Binding ClearAllFiltersCommand}" FontSize="12" Padding="6,2" />
+                <ItemsControl ItemsSource="{Binding EntityTypeFilters}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <StackPanel Orientation="Horizontal" Spacing="8" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <CheckBox Content="{Binding TypeName}" IsChecked="{Binding IsSelected}" FontSize="12" />
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
         </Border>
 
         <!-- Selected node detail panel -->
@@ -28,9 +49,27 @@
             </StackPanel>
         </Border>
 
-        <!-- Graph canvas -->
-        <controls:GraphCanvas Nodes="{Binding Nodes}"
-                              Edges="{Binding Edges}"
-                              SelectedNode="{Binding SelectedNode, Mode=TwoWay}" />
+        <!-- Graph area -->
+        <Panel>
+            <!-- Empty state -->
+            <StackPanel IsVisible="{Binding !HasNodes}"
+                        VerticalAlignment="Center" HorizontalAlignment="Center"
+                        Spacing="12" Margin="32">
+                <TextBlock Text="No Entities Yet"
+                           FontSize="20" FontWeight="SemiBold"
+                           HorizontalAlignment="Center" Foreground="#cdd6f4" />
+                <TextBlock Text="Start chatting with Nexus to build your knowledge graph. Entities will appear here as they are extracted from your conversations."
+                           FontSize="13" HorizontalAlignment="Center"
+                           Foreground="#a6adc8" TextWrapping="Wrap"
+                           TextAlignment="Center" MaxWidth="400" />
+            </StackPanel>
+
+            <!-- Graph canvas: visible when nodes exist -->
+            <controls:GraphCanvas x:Name="GraphCanvasControl"
+                                  IsVisible="{Binding HasNodes}"
+                                  Nodes="{Binding Nodes}"
+                                  Edges="{Binding Edges}"
+                                  SelectedNode="{Binding SelectedNode, Mode=TwoWay}" />
+        </Panel>
     </DockPanel>
 </UserControl>

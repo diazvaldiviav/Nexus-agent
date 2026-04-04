@@ -1,8 +1,16 @@
 using Microsoft.Data.Sqlite;
 using Nexus.Core;
+using Nexus.Core.Abstractions;
+using Nexus.Core.Models;
+using Nexus.Core.Providers;
+using Nexus.Core.Services;
 using Nexus.Core.Config;
 using Nexus.Integration.Tests.Fakes;
-using Nexus.Memory;
+using Nexus.Memory.Abstractions;
+using Nexus.Memory.Embedding;
+using Nexus.Memory.Graph;
+using Nexus.Memory.Infrastructure;
+using Nexus.Memory.Processing;
 using Nexus.Memory.Models;
 using Xunit;
 
@@ -246,7 +254,9 @@ public class E2EFlowTests : IDisposable
             var promptBuilder = new PromptBuilder(memoryBuilder, config.Agent);
             var modelRouter = new ModelRouter(config.Models.Routing);
             var entityExtractor = new EntityExtractor(graph);
-            var agent = new AgentService(config, graph, promptBuilder, modelRouter, entityExtractor);
+            var summarizer = new InteractionSummarizer(graph);
+            var providerFactory = new LlmProviderFactory(Array.Empty<ILlmProvider>());
+            var agent = new AgentService(config, graph, promptBuilder, modelRouter, entityExtractor, providerFactory, summarizer);
 
             // Assert: conversation history starts empty
             Assert.Empty(agent.ConversationHistory);

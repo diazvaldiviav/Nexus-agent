@@ -1,7 +1,15 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Nexus.Core.Abstractions;
 using Nexus.Core.Config;
-using Nexus.Memory;
+using Nexus.Core.Models;
+using Nexus.Core.Providers;
+using Nexus.Core.Services;
+using Nexus.Memory.Abstractions;
+using Nexus.Memory.Embedding;
+using Nexus.Memory.Graph;
+using Nexus.Memory.Infrastructure;
+using Nexus.Memory.Processing;
 
 namespace Nexus.Core;
 
@@ -19,7 +27,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(config.Agent);
         services.AddSingleton(config.Models.Routing);
 
-        services.AddSingleton(_ => new KnowledgeGraph(dbInit.ConnectionString));
+        var knowledgeGraph = new KnowledgeGraph(dbInit.ConnectionString);
+        services.AddSingleton<IKnowledgeGraph>(knowledgeGraph);
+        services.AddSingleton<IActionLogNotifier>(knowledgeGraph);
         services.AddSingleton(_ => new SemanticSearch(dbInit.ConnectionString));
 
         var defaultEndpoint = string.Equals(config.Embeddings.Provider, "openai", StringComparison.OrdinalIgnoreCase)
@@ -47,10 +57,8 @@ public static class ServiceCollectionExtensions
             // Default: Ollama primary, cloud fallback if API key available
             var primary = new OllamaEmbeddingService(options);
 
-            // Resolve cloud fallback: Gemini (from models.cloud) > OpenAI (from embeddings.api_key / env)
-            var googleApiKey = config.Models.Cloud.ApiKey
-                            ?? Environment.GetEnvironmentVariable("GEMINI_API_KEY")
-                            ?? Environment.GetEnvironmentVariable("GOOGLE_API_KEY");
+            // Resolve cloud fallback: Gemini (from models.gemini) > OpenAI (from embeddings.api_key / env)
+            var googleApiKey = config.Models.GetApiKey("gemini");
 
             if (!string.IsNullOrEmpty(googleApiKey))
             {
@@ -72,18 +80,20 @@ public static class ServiceCollectionExtensions
         });
 
         services.AddSingleton(sp => new MemoryContextBuilder(
-            sp.GetRequiredService<KnowledgeGraph>(),
+            sp.GetRequiredService<IKnowledgeGraph>(),
             sp.GetRequiredService<SemanticSearch>(),
             sp.GetService<IEmbeddingService>(),
             config.Memory.WorkingMemoryMaxTokens,
             config.Memory.RelevantMemoryMaxTokens,
             config.Memory.MaxRetrievalNodes,
-            sp.GetService<ILogger<MemoryContextBuilder>>()));
+            sp.GetService<ILogger<MemoryContextBuilder>>(),
+            config.Memory.RecentInteractionsFetchLimit));
         services.AddSingleton(sp => new PromptBuilder(
             sp.GetRequiredService<MemoryContextBuilder>(),
-            config.Agent));
+            config.Agent,
+            sp.GetService<IToolExecutor>()));
 
-        // Registration order: ModelRouter -> ILlmClient -> EntityExtractor (dependency chain)
+        // Registration order: ModelRouter -> ILlmClient -> EntityExtractor -> Providers -> Factory -> AgentService
         services.AddSingleton(sp => new ModelRouter(
             config.Models.Routing,
             sp.GetService<ILogger<ModelRouter>>()));
@@ -97,22 +107,13 @@ public static class ServiceCollectionExtensions
         });
         services.AddSingleton(sp =>
         {
-            var graph = sp.GetRequiredService<KnowledgeGraph>();
+            var graph = sp.GetRequiredService<IKnowledgeGraph>();
             var llmClient = sp.GetService<ILlmClient>();
             var embeddingService = sp.GetService<IEmbeddingService>();
 
             // Gemini fallback: resolve API key from config or environment
-            string? geminiApiKey = null;
+            var geminiApiKey = config.Models.GetApiKey("gemini");
             HttpClient? geminiHttp = null;
-            if (!string.IsNullOrEmpty(config.Models.Cloud.ApiKey))
-            {
-                geminiApiKey = config.Models.Cloud.ApiKey;
-            }
-            else
-            {
-                geminiApiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY")
-                            ?? Environment.GetEnvironmentVariable("GOOGLE_API_KEY");
-            }
             if (!string.IsNullOrEmpty(geminiApiKey))
             {
                 // Singleton lifetime — allocated once, lives for app duration
@@ -122,19 +123,85 @@ public static class ServiceCollectionExtensions
             return new EntityExtractor(graph, llmClient, embeddingService, geminiHttp, geminiApiKey,
                 sp.GetService<ILogger<EntityExtractor>>());
         });
+
+        // LLM Providers (multi-registration for LlmProviderFactory)
+        services.AddSingleton<ILlmProvider>(sp =>
+            new OllamaLlmProvider(config.Models.Local));
+
+        var geminiProviderApiKey = config.Models.GetApiKey("gemini");
+
+        if (!string.IsNullOrEmpty(geminiProviderApiKey))
+        {
+            services.AddSingleton<ILlmProvider>(sp =>
+                new GeminiLlmProvider(geminiProviderApiKey, endpoint: config.Models.GetEndpoint("gemini"),
+                    logger: sp.GetService<ILogger<GeminiLlmProvider>>()));
+        }
+
+        // Anthropic provider
+        var anthropicApiKey = config.Models.GetApiKey("anthropic");
+
+        if (!string.IsNullOrEmpty(anthropicApiKey))
+        {
+            services.AddSingleton<ILlmProvider>(sp =>
+                new AnthropicLlmProvider(anthropicApiKey,
+                    endpoint: config.Models.GetEndpoint("anthropic"),
+                    logger: sp.GetService<ILogger<AnthropicLlmProvider>>()));
+        }
+
+        // OpenAI provider
+        var openAiProviderApiKey = config.Models.GetApiKey("openai");
+
+        if (!string.IsNullOrEmpty(openAiProviderApiKey))
+        {
+            services.AddSingleton<ILlmProvider>(sp =>
+                new OpenAiLlmProvider(openAiProviderApiKey,
+                    endpoint: config.Models.GetEndpoint("openai"),
+                    logger: sp.GetService<ILogger<OpenAiLlmProvider>>()));
+        }
+
+        services.AddSingleton(sp => new EntityResolver(
+            sp.GetRequiredService<IKnowledgeGraph>(),
+            sp.GetService<IEmbeddingService>(),
+            sp.GetService<ILlmClient>(),
+            config.Memory.DeduplicationThreshold,
+            sp.GetService<ILogger<EntityResolver>>()));
+
+        services.AddSingleton(sp => new MemoryCompressor(
+            sp.GetRequiredService<IKnowledgeGraph>(),
+            ConfigLoader.GetArchivePath(config),
+            config.Memory.ArchiveThresholdDays,
+            sp.GetService<ILlmClient>(),
+            sp.GetService<IEmbeddingService>(),
+            sp.GetService<ILogger<MemoryCompressor>>()));
+
+        services.AddSingleton<IInteractionSummarizer>(sp => new InteractionSummarizer(
+            sp.GetRequiredService<IKnowledgeGraph>(),
+            sp.GetService<ILlmClient>(),
+            sp.GetService<IEmbeddingService>(),
+            sp.GetService<ILogger<InteractionSummarizer>>()));
+
+        services.AddSingleton<LlmProviderFactory>();
+
         services.AddSingleton(sp => new AgentService(
             config,
-            sp.GetRequiredService<KnowledgeGraph>(),
+            sp.GetRequiredService<IKnowledgeGraph>(),
             sp.GetRequiredService<PromptBuilder>(),
             sp.GetRequiredService<ModelRouter>(),
             sp.GetRequiredService<EntityExtractor>(),
+            sp.GetRequiredService<LlmProviderFactory>(),
+            sp.GetRequiredService<IInteractionSummarizer>(),
+            sp.GetService<IToolExecutor>(),
+            sp.GetService<EntityResolver>(),
+            sp.GetService<MemoryCompressor>(),
             sp.GetService<ILogger<AgentService>>()));
-        services.AddSingleton(_ => new RelevanceDecay(
+        services.AddSingleton<IAgentService>(sp => sp.GetRequiredService<AgentService>());
+        services.AddSingleton(sp => new RelevanceDecay(
             dbInit.ConnectionString,
             config.Memory.RelevanceDecayLambda,
             config.Memory.WorkingThresholdScore,
             config.Memory.WorkingThresholdMentions,
-            config.Memory.ArchiveThresholdScore));
+            config.Memory.ArchiveThresholdScore,
+            sp.GetService<MemoryCompressor>()));
 
         return services;
     }

@@ -90,3 +90,43 @@ public class ConfigLoaderTests : IDisposable
             Directory.Delete(_tempDir, recursive: true);
     }
 }
+
+[Collection("CWD")]
+public class ConfigLoaderCwdTests : IDisposable
+{
+    private readonly string _tempDir;
+
+    public ConfigLoaderCwdTests()
+    {
+        _tempDir = Path.Combine(Path.GetTempPath(), $"nexus_config_cwd_test_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(_tempDir);
+    }
+
+    [Fact]
+    public void Load_WhenLocalExists_PrefersLocalOverGlobal()
+    {
+        var originalDir = Directory.GetCurrentDirectory();
+        try
+        {
+            var yaml = "agent:\n  name: LocalConfig\n";
+            File.WriteAllText(Path.Combine(_tempDir, "nexus.yaml"), yaml);
+
+            Directory.SetCurrentDirectory(_tempDir);
+
+            var config = ConfigLoader.Load();
+
+            Assert.Equal("LocalConfig", config.Agent.Name);
+        }
+        finally
+        {
+            Directory.SetCurrentDirectory(originalDir);
+        }
+    }
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_tempDir))
+            Directory.Delete(_tempDir, recursive: true);
+        GC.SuppressFinalize(this);
+    }
+}

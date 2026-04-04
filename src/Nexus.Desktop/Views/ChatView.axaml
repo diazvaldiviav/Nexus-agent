@@ -1,7 +1,23 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Nexus.Desktop.ViewModels"
+             xmlns:controls="using:Nexus.Desktop.Controls"
              x:Class="Nexus.Desktop.Views.ChatView">
+
+    <UserControl.Styles>
+        <Style Selector="Border.error">
+            <Setter Property="Background" Value="#4df38ba8"/>
+        </Style>
+        <Style Selector="Border.message-bubble">
+            <Setter Property="Background" Value="#313244"/>
+        </Style>
+        <!-- ~70% of typical chat area width; defined after message-bubble so it wins by document order -->
+        <Style Selector="Border.user-bubble">
+            <Setter Property="Background" Value="#45475a"/>
+            <Setter Property="HorizontalAlignment" Value="Right"/>
+            <Setter Property="MaxWidth" Value="600"/>
+        </Style>
+    </UserControl.Styles>
 
     <DockPanel>
         <!-- Header -->
@@ -9,9 +25,28 @@
             <DockPanel>
                 <TextBlock Text="Chat" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
                 <Button DockPanel.Dock="Right" Content="Clear" Command="{Binding ClearHistoryCommand}"
-                        Margin="0,0,0,0" Padding="8,4" />
+                        IsEnabled="{Binding !IsProcessing}" Margin="0,0,0,0" Padding="8,4" />
                 <TextBlock DockPanel.Dock="Right" Text="{Binding StatusText}"
                            VerticalAlignment="Center" Opacity="0.6" FontSize="12" Margin="0,0,12,0" />
+            </DockPanel>
+        </Border>
+
+        <!-- Processing indicator -->
+        <ProgressBar DockPanel.Dock="Top" IsIndeterminate="True" Height="2"
+                     IsVisible="{Binding IsProcessing}" />
+
+        <!-- Error banner -->
+        <Border DockPanel.Dock="Top" IsVisible="{Binding HasError}"
+                Background="#4df38ba8" Padding="12,8" BorderThickness="0,0,0,1" BorderBrush="#f38ba8">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                    <Button Content="Retry" Command="{Binding RetryCommand}" Padding="8,4" />
+                    <Button Content="Dismiss" Command="{Binding DismissErrorCommand}" Padding="8,4" />
+                </StackPanel>
+                <StackPanel Spacing="2">
+                    <TextBlock Text="{Binding ErrorMessage}" Foreground="#f38ba8" FontWeight="SemiBold" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding ErrorDetail}" Foreground="#a6adc8" FontSize="11" TextWrapping="Wrap" />
+                </StackPanel>
             </DockPanel>
         </Border>
 
@@ -22,31 +57,69 @@
                          Text="{Binding InputText, Mode=TwoWay}"
                          Watermark="Type your message..."
                          AcceptsReturn="False"
-                         Margin="0,0,8,0" />
+                         Margin="0,0,8,0"
+                         AutomationProperties.Name="Message input" />
                 <Button Grid.Column="1"
                         Content="Send"
                         Command="{Binding SendCommand}"
-                        IsEnabled="{Binding !IsProcessing}" />
+                        IsEnabled="{Binding !IsProcessing}"
+                        AutomationProperties.Name="Send message" />
             </Grid>
         </Border>
 
-        <!-- Messages list -->
-        <ScrollViewer>
-            <ItemsControl ItemsSource="{Binding Messages}" Margin="16,8">
-                <ItemsControl.ItemTemplate>
-                    <DataTemplate x:DataType="vm:ChatMessage">
-                        <Border Margin="0,4" Padding="12,8" CornerRadius="8" Background="#313244">
-                            <StackPanel>
-                                <TextBlock Text="{Binding Role}" FontSize="10" FontWeight="Bold"
-                                           Opacity="0.5" Margin="0,0,0,4" />
-                                <TextBlock Text="{Binding Content}" TextWrapping="Wrap" />
-                                <TextBlock Text="{Binding ModelInfo}" FontSize="10" Opacity="0.6"
-                                           IsVisible="{Binding !IsUser}" Margin="0,4,0,0" />
-                            </StackPanel>
-                        </Border>
-                    </DataTemplate>
-                </ItemsControl.ItemTemplate>
-            </ItemsControl>
-        </ScrollViewer>
+        <!-- Messages area -->
+        <Panel>
+            <!-- Empty state: visible when no messages -->
+            <StackPanel IsVisible="{Binding !HasMessages}"
+                        VerticalAlignment="Center" HorizontalAlignment="Center"
+                        Spacing="16" Margin="32">
+                <TextBlock Text="Start a Conversation"
+                           FontSize="20" FontWeight="SemiBold"
+                           HorizontalAlignment="Center" Foreground="#cdd6f4" />
+                <TextBlock Text="Ask Nexus anything. Your conversations build its memory."
+                           FontSize="13" HorizontalAlignment="Center"
+                           Foreground="#a6adc8" TextWrapping="Wrap"
+                           TextAlignment="Center" MaxWidth="400" />
+                <StackPanel Spacing="8" HorizontalAlignment="Center" Margin="0,8,0,0">
+                    <Button Content="Tell me about your capabilities"
+                            Command="{Binding SetExamplePromptCommand}"
+                            CommandParameter="Tell me about your capabilities"
+                            HorizontalAlignment="Stretch" Padding="12,8" />
+                    <Button Content="Help me plan a project"
+                            Command="{Binding SetExamplePromptCommand}"
+                            CommandParameter="Help me plan a project"
+                            HorizontalAlignment="Stretch" Padding="12,8" />
+                    <Button Content="What do you remember about me?"
+                            Command="{Binding SetExamplePromptCommand}"
+                            CommandParameter="What do you remember about me?"
+                            HorizontalAlignment="Stretch" Padding="12,8" />
+                </StackPanel>
+            </StackPanel>
+
+            <!-- Messages list: visible when messages exist -->
+            <ScrollViewer x:Name="MessagesScroller" IsVisible="{Binding HasMessages}">
+                <ItemsControl ItemsSource="{Binding Messages}" Margin="16,8">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:ChatMessage">
+                            <Border Margin="0,4" Padding="12,8" CornerRadius="8"
+                                    Classes="message-bubble"
+                                    Classes.error="{Binding IsError}"
+                                    Classes.user-bubble="{Binding IsUser}">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Role}" FontSize="10" FontWeight="Bold"
+                                               Opacity="0.5" Margin="0,0,0,4" />
+                                    <TextBlock Text="{Binding Content}" TextWrapping="Wrap"
+                                               IsVisible="{Binding !IsAssistantNormal}" />
+                                    <controls:MarkdownTextBlock Text="{Binding Content}"
+                                               IsVisible="{Binding IsAssistantNormal}" />
+                                    <TextBlock Text="{Binding ModelInfo}" FontSize="10" Opacity="0.6"
+                                               IsVisible="{Binding !IsUser}" Margin="0,4,0,0" />
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+        </Panel>
     </DockPanel>
 </UserControl>

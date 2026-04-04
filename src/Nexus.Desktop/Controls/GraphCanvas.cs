@@ -2,14 +2,30 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Media;
+using Avalonia.Media.Immutable;
 using Nexus.Desktop.ViewModels;
 using Nexus.Memory.Models;
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 
 namespace Nexus.Desktop.Controls;
 
 public class GraphCanvas : Control
 {
+    private static readonly ImmutableSolidColorBrush s_bgBrush = new(Color.Parse("#1E1E2E"));
+    private static readonly ImmutablePen s_edgePen = new(new ImmutableSolidColorBrush(Color.Parse("#45475A")), 1);
+    private static readonly ImmutableSolidColorBrush s_edgeLabelBrush = new(Color.Parse("#6C7086"));
+    private static readonly ImmutablePen s_selectedNodePen = new(new ImmutableSolidColorBrush(Colors.White), 2);
+    private static readonly ImmutablePen s_pinnedNodePen = new(new ImmutableSolidColorBrush(Color.Parse("#F9E2AF")), 1.5);
+
+    private static readonly ImmutableSolidColorBrush s_personBrush = new(Color.Parse("#89B4FA"));
+    private static readonly ImmutableSolidColorBrush s_projectBrush = new(Color.Parse("#A6E3A1"));
+    private static readonly ImmutableSolidColorBrush s_technologyBrush = new(Color.Parse("#FAB387"));
+    private static readonly ImmutableSolidColorBrush s_decisionBrush = new(Color.Parse("#F38BA8"));
+    private static readonly ImmutableSolidColorBrush s_dateBrush = new(Color.Parse("#BAC2DE"));
+    private static readonly ImmutableSolidColorBrush s_preferenceBrush = new(Color.Parse("#CBA6F7"));
+    private static readonly ImmutableSolidColorBrush s_defaultTypeBrush = new(Color.Parse("#6C7086"));
+
     public static readonly StyledProperty<ObservableCollection<GraphNode>?> NodesProperty =
         AvaloniaProperty.Register<GraphCanvas, ObservableCollection<GraphNode>?>(nameof(Nodes));
 
@@ -41,10 +57,33 @@ public class GraphCanvas : Control
     private double _offsetX, _offsetY, _scale = 1.0;
     private bool _isPanning;
     private Point _lastPanPoint;
+    private GraphNode? _draggingNode;
+    private Point _dragOffset;
+    private Dictionary<string, GraphNode>? _nodeLookup;
 
     static GraphCanvas()
     {
         AffectsRender<GraphCanvas>(NodesProperty, EdgesProperty, SelectedNodeProperty);
+
+        NodesProperty.Changed.AddClassHandler<GraphCanvas>((canvas, args) =>
+        {
+            canvas._nodeLookup = null;
+
+            if (args.OldValue is ObservableCollection<GraphNode> oldCollection)
+            {
+                oldCollection.CollectionChanged -= canvas.OnNodesCollectionChanged;
+            }
+
+            if (args.NewValue is ObservableCollection<GraphNode> newCollection)
+            {
+                newCollection.CollectionChanged += canvas.OnNodesCollectionChanged;
+            }
+        });
+    }
+
+    private void OnNodesCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        _nodeLookup = null;
     }
 
     public GraphCanvas()
@@ -56,7 +95,7 @@ public class GraphCanvas : Control
     {
         base.Render(ctx);
 
-        ctx.FillRectangle(new SolidColorBrush(Color.Parse("#1E1E2E")), new Rect(Bounds.Size));
+        ctx.FillRectangle(s_bgBrush, new Rect(Bounds.Size));
 
         var nodes = Nodes;
         var edges = Edges;
@@ -77,39 +116,44 @@ public class GraphCanvas : Control
 
         if (edges != null)
         {
-            var nodeLookup = nodes.ToDictionary(n => n.Id);
-            var edgePen = new Pen(new SolidColorBrush(Color.Parse("#45475A")), 1);
+            _nodeLookup ??= nodes.ToDictionary(n => n.Id);
 
             foreach (var edge in edges)
             {
-                if (!nodeLookup.TryGetValue(edge.SourceId, out var src) ||
-                    !nodeLookup.TryGetValue(edge.TargetId, out var tgt))
+                if (!_nodeLookup.TryGetValue(edge.SourceId, out var src) ||
+                    !_nodeLookup.TryGetValue(edge.TargetId, out var tgt))
                     continue;
 
-                ctx.DrawLine(edgePen, new Point(src.X, src.Y), new Point(tgt.X, tgt.Y));
+                ctx.DrawLine(s_edgePen, new Point(src.X, src.Y), new Point(tgt.X, tgt.Y));
 
                 var midX = (src.X + tgt.X) / 2;
                 var midY = (src.Y + tgt.Y) / 2;
                 var labelFt = new FormattedText(edge.RelationType,
                     System.Globalization.CultureInfo.CurrentCulture,
                     FlowDirection.LeftToRight,
-                    Typeface.Default, 9, new SolidColorBrush(Color.Parse("#6C7086")));
+                    Typeface.Default, 9, s_edgeLabelBrush);
                 ctx.DrawText(labelFt, new Point(midX - labelFt.Width / 2, midY - labelFt.Height / 2));
             }
         }
 
         foreach (var node in nodes)
         {
-            var color = GetNodeColor(node.Type);
+            var typeBrush = GetNodeBrush(node.Type);
             var isSelected = SelectedNode?.Id == node.Id;
+            var isPinned = node.IsPinned;
             var radius = node.Size / 2;
 
-            var brush = new SolidColorBrush(color, isSelected ? 1.0 : 0.85);
-            ctx.DrawEllipse(brush,
-                isSelected ? new Pen(Brushes.White, 2) : null,
-                new Point(node.X, node.Y), radius, radius);
+            IBrush fillBrush = isSelected
+                ? typeBrush
+                : new ImmutableSolidColorBrush(typeBrush.Color, 0.85);
+            var pen = isSelected
+                ? s_selectedNodePen
+                : isPinned
+                    ? s_pinnedNodePen
+                    : null;
+            ctx.DrawEllipse(fillBrush, pen, new Point(node.X, node.Y), radius, radius);
 
-            var label = node.Name.Length > 12 ? node.Name[..12] + "…" : node.Name;
+            var label = node.Name.Length > 12 ? node.Name[..12] + "\u2026" : node.Name;
             var nodeFt = new FormattedText(label,
                 System.Globalization.CultureInfo.CurrentCulture,
                 FlowDirection.LeftToRight,
@@ -118,15 +162,15 @@ public class GraphCanvas : Control
         }
     }
 
-    private static Color GetNodeColor(EntityType type) => type switch
+    private static ImmutableSolidColorBrush GetNodeBrush(EntityType type) => type switch
     {
-        EntityType.Person => Color.Parse("#89B4FA"),
-        EntityType.Project => Color.Parse("#A6E3A1"),
-        EntityType.Technology => Color.Parse("#FAB387"),
-        EntityType.Decision => Color.Parse("#F38BA8"),
-        EntityType.Date => Color.Parse("#BAC2DE"),
-        EntityType.Preference => Color.Parse("#CBA6F7"),
-        _ => Color.Parse("#6C7086")
+        EntityType.Person => s_personBrush,
+        EntityType.Project => s_projectBrush,
+        EntityType.Technology => s_technologyBrush,
+        EntityType.Decision => s_decisionBrush,
+        EntityType.Date => s_dateBrush,
+        EntityType.Preference => s_preferenceBrush,
+        _ => s_defaultTypeBrush
     };
 
     protected override void OnPointerPressed(PointerPressedEventArgs e)
@@ -138,6 +182,12 @@ public class GraphCanvas : Control
         if (hit != null)
         {
             SelectedNode = hit;
+
+            // Start dragging
+            var graphPt = ScreenToGraph(pt);
+            _draggingNode = hit;
+            _dragOffset = new Point(graphPt.X - hit.X, graphPt.Y - hit.Y);
+            e.Pointer.Capture(this);
             return;
         }
 
@@ -149,6 +199,20 @@ public class GraphCanvas : Control
     protected override void OnPointerMoved(PointerEventArgs e)
     {
         base.OnPointerMoved(e);
+
+        if (_draggingNode != null)
+        {
+            var pt = e.GetPosition(this);
+            var graphPt = ScreenToGraph(pt);
+            double newX = graphPt.X - _dragOffset.X;
+            double newY = graphPt.Y - _dragOffset.Y;
+
+            var vm = DataContext as MemoryGraphViewModel;
+            vm?.UpdateNodePosition(_draggingNode, newX, newY);
+            InvalidateVisual();
+            return;
+        }
+
         if (_isPanning)
         {
             var pt = e.GetPosition(this);
@@ -162,6 +226,7 @@ public class GraphCanvas : Control
     protected override void OnPointerReleased(PointerReleasedEventArgs e)
     {
         base.OnPointerReleased(e);
+        _draggingNode = null;
         _isPanning = false;
         e.Pointer.Capture(null);
     }
@@ -174,14 +239,16 @@ public class GraphCanvas : Control
         InvalidateVisual();
     }
 
+    private Point ScreenToGraph(Point screenPt) => new(
+        (screenPt.X - _offsetX) / _scale,
+        (screenPt.Y - _offsetY) / _scale);
+
     private GraphNode? HitTest(Point screenPt)
     {
         var nodes = Nodes;
         if (nodes == null) return null;
 
-        var graphPt = new Point(
-            (screenPt.X - _offsetX) / _scale,
-            (screenPt.Y - _offsetY) / _scale);
+        var graphPt = ScreenToGraph(screenPt);
 
         return nodes.FirstOrDefault(n =>
         {

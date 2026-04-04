@@ -1,0 +1,441 @@
+using Microsoft.Extensions.Logging;
+using Nexus.Core.Abstractions;
+using Nexus.Core.Config;
+using Nexus.Core.Models;
+using Nexus.Core.Providers;
+using Nexus.Memory.Abstractions;
+using Nexus.Memory.Graph;
+using Nexus.Memory.Models;
+using Nexus.Memory.Processing;
+
+namespace Nexus.Core.Services;
+
+public class AgentService : IAgentService
+{
+    private readonly NexusConfig _config;
+    private readonly IKnowledgeGraph _graph;
+    private readonly PromptBuilder _promptBuilder;
+    private readonly ModelRouter _modelRouter;
+    private readonly EntityExtractor _entityExtractor;
+    private readonly LlmProviderFactory _providerFactory;
+    private readonly IInteractionSummarizer _summarizer;
+    private readonly IToolExecutor? _toolExecutor;
+    private readonly EntityResolver? _entityResolver;
+    private readonly MemoryCompressor? _compressor;
+    private readonly ILogger<AgentService>? _logger;
+    private readonly List<ConversationMessage> _conversationHistory = new();
+    private Task? _pendingExtraction;
+    private readonly object _extractionLock = new();
+    private int _turnCount;
+
+    public AgentService(
+        NexusConfig config,
+        IKnowledgeGraph graph,
+        PromptBuilder promptBuilder,
+        ModelRouter modelRouter,
+        EntityExtractor entityExtractor,
+        LlmProviderFactory providerFactory,
+        IInteractionSummarizer summarizer,
+        IToolExecutor? toolExecutor = null,
+        EntityResolver? entityResolver = null,
+        MemoryCompressor? compressor = null,
+        ILogger<AgentService>? logger = null)
+    {
+        _config = config;
+        _graph = graph;
+        _promptBuilder = promptBuilder;
+        _modelRouter = modelRouter;
+        _entityExtractor = entityExtractor;
+        _providerFactory = providerFactory;
+        _summarizer = summarizer;
+        _toolExecutor = toolExecutor;
+        _entityResolver = entityResolver;
+        _compressor = compressor;
+        _logger = logger;
+    }
+
+    public IReadOnlyList<ConversationMessage> ConversationHistory => _conversationHistory.AsReadOnly();
+
+    public async Task<AgentResponse> ChatAsync(string userMessage, CancellationToken cancellationToken = default)
+    {
+        // Ensure previous extraction completes before processing new message
+        await FlushPendingExtractionAsync().ConfigureAwait(false);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        _logger?.LogInformation("Processing user message: {Message}", userMessage[..Math.Min(100, userMessage.Length)]);
+
+        _conversationHistory.Add(new ConversationMessage { Role = "user", Content = userMessage });
+
+        var systemPrompt = await _promptBuilder.BuildSystemPromptAsync(userMessage, cancellationToken);
+        _logger?.LogDebug("System prompt ({Length} chars), tools available: {HasTools}",
+            systemPrompt.Length, _toolExecutor?.HasTools ?? false);
+
+        var useCloud = _modelRouter.IsCloud(TaskType.MemoryQueryResponse);
+        var modelConfig = useCloud ? _config.Models.Cloud : _config.Models.Local;
+
+        var response = await CallLlmAsync(systemPrompt, userMessage, modelConfig, cancellationToken);
+
+        // Tool call loop: detect tool calls, execute, feed result back to LLM
+        var maxIterations = _config.Mcp.MaxToolCallIterations;
+        for (int i = 0; i < maxIterations; i++)
+        {
+            if (_toolExecutor is null || !_toolExecutor.HasTools)
+                break;
+
+            var toolCall = ToolCallParser.TryParse(response);
+            if (toolCall is null)
+                break;
+
+            _logger?.LogInformation("Tool call detected: {Name} (iteration {Iteration})", toolCall.Name, i + 1);
+
+            var toolResult = await ExecuteToolWithTimeoutAsync(toolCall, cancellationToken).ConfigureAwait(false);
+
+            _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = response });
+            _conversationHistory.Add(new ConversationMessage { Role = "user", Content = $"[Tool Result for {toolCall.Name}]:\n{toolResult}" });
+
+            response = await CallLlmAsync(systemPrompt, $"[Tool Result for {toolCall.Name}]:\n{toolResult}", modelConfig, cancellationToken);
+        }
+
+        _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = response });
+        _turnCount++;
+
+        sw.Stop();
+
+        var agentResponse = new AgentResponse
+        {
+            Content = response,
+            ModelUsed = $"{modelConfig.Provider}/{modelConfig.Model}",
+            DurationMs = (int)sw.ElapsedMilliseconds
+        };
+
+        // Background extraction — tracked so it completes before next message or exit
+        var conversationText = $"User: {userMessage}\nAssistant: {response}";
+        var extractionPrompt = _promptBuilder.BuildEntityExtractionPrompt(conversationText);
+        var currentTurn = _turnCount;
+        var historySnapshot = _conversationHistory.ToList();
+        var extractionTask = Task.Run(async () =>
+        {
+            try
+            {
+                var extracted = await _entityExtractor.ExtractAndPersistAsync(
+                    conversationText, extractionPrompt);
+                agentResponse.ExtractedEntities = extracted;
+
+                await _graph.LogActionAsync(new AgentAction
+                {
+                    ActionType = "chat",
+                    Detail = userMessage[..Math.Min(200, userMessage.Length)],
+                    ModelUsed = $"{modelConfig.Provider}/{modelConfig.Model}",
+                    TokensIn = (systemPrompt.Length + userMessage.Length) / 4,
+                    TokensOut = response.Length / 4,
+                    DurationMs = (int)sw.ElapsedMilliseconds
+                });
+                _logger?.LogInformation("Entity extraction completed: {Count} entities", extracted.Count);
+
+                if (_entityResolver is not null)
+                {
+                    try
+                    {
+                        await _entityResolver.FindAndMergeAsync(useLlmConfirmation: false);
+                        _logger?.LogInformation("Background deduplication completed");
+                    }
+                    catch (Exception dedupEx)
+                    {
+                        _logger?.LogWarning(dedupEx, "Background deduplication failed");
+                    }
+                }
+
+                if (currentTurn > 0 && currentTurn % _config.Memory.SummarizationInterval == 0)
+                {
+                    try
+                    {
+                        var convText = string.Join("\n", historySnapshot.Select(m => $"{m.Role}: {m.Content}"));
+                        var summaryPrompt = _promptBuilder.BuildInteractionSummaryPrompt(convText);
+                        var entityIds = extracted.Select(e => e.Id).ToList();
+                        await _summarizer.SummarizeAsync(convText, summaryPrompt, entityIds);
+                        _logger?.LogInformation("Interaction summarized at turn {Turn}", currentTurn);
+                    }
+                    catch (Exception sumEx)
+                    {
+                        _logger?.LogWarning(sumEx, "Background summarization failed at turn {Turn}", currentTurn);
+                    }
+                }
+
+                if (_compressor is not null && _config.Memory.CompressionEnabled)
+                {
+                    try
+                    {
+                        await _compressor.ArchiveStaleEntitiesAsync();
+                        _logger?.LogInformation("Background archival completed");
+                    }
+                    catch (Exception archiveEx)
+                    {
+                        _logger?.LogWarning(archiveEx, "Background archival failed");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Background processing failed (extraction or dedup).");
+            }
+        });
+        TrackExtraction(extractionTask);
+
+        return agentResponse;
+    }
+
+    public async Task ClearHistoryAsync()
+    {
+        if (_conversationHistory.Count > 0)
+        {
+            try
+            {
+                var convText = string.Join("\n", _conversationHistory.Select(m => $"{m.Role}: {m.Content}"));
+                var summaryPrompt = _promptBuilder.BuildInteractionSummaryPrompt(convText);
+                await _summarizer.SummarizeAsync(convText, summaryPrompt).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Summarization failed during ClearHistoryAsync");
+            }
+        }
+        _conversationHistory.Clear();
+        _turnCount = 0;
+    }
+
+    /// <summary>
+    /// Waits for any in-progress background entity extraction to complete.
+    /// Call this before exiting the application to avoid losing extracted entities.
+    /// </summary>
+    public async Task FlushPendingExtractionAsync()
+    {
+        Task? pending;
+        lock (_extractionLock)
+        {
+            pending = _pendingExtraction;
+        }
+        if (pending is not null)
+        {
+            await pending.ConfigureAwait(false);
+        }
+    }
+
+    private void TrackExtraction(Task extractionTask)
+    {
+        lock (_extractionLock)
+        {
+            _pendingExtraction = extractionTask;
+        }
+    }
+
+    public async IAsyncEnumerable<string> ChatStreamAsync(
+        string userMessage,
+        Action<int>? onEntitiesExtracted = null,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        // Ensure previous extraction completes before processing new message
+        await FlushPendingExtractionAsync().ConfigureAwait(false);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        _conversationHistory.Add(new ConversationMessage { Role = "user", Content = userMessage });
+
+        var systemPrompt = await _promptBuilder.BuildSystemPromptAsync(userMessage, cancellationToken);
+        _logger?.LogDebug("Stream system prompt ({Length} chars), tools available: {HasTools}",
+            systemPrompt.Length, _toolExecutor?.HasTools ?? false);
+
+        var useCloud = _modelRouter.IsCloud(TaskType.MemoryQueryResponse);
+        var modelConfig = useCloud ? _config.Models.Cloud : _config.Models.Local;
+
+        var fullResponse = new System.Text.StringBuilder();
+
+        var provider = _providerFactory.GetRequiredProvider(modelConfig.Provider);
+        await foreach (var token in provider.ChatStreamAsync(
+            systemPrompt, _conversationHistory, modelConfig.Model, cancellationToken))
+        {
+            fullResponse.Append(token);
+            yield return token;
+        }
+
+        var response = fullResponse.ToString();
+
+        // Tool call loop for streaming: detect tool calls, execute, re-stream follow-up
+        var maxIterations = _config.Mcp.MaxToolCallIterations;
+        for (int i = 0; i < maxIterations; i++)
+        {
+            if (_toolExecutor is null || !_toolExecutor.HasTools)
+                break;
+
+            var toolCall = ToolCallParser.TryParse(response);
+            if (toolCall is null)
+                break;
+
+            _logger?.LogInformation("Tool call detected in stream: {Name} (iteration {Iteration})", toolCall.Name, i + 1);
+
+            yield return $"\n[Executing tool: {toolCall.Name}...]\n";
+
+            var toolResult = await ExecuteToolWithTimeoutAsync(toolCall, cancellationToken).ConfigureAwait(false);
+
+            _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = response });
+            _conversationHistory.Add(new ConversationMessage { Role = "user", Content = $"[Tool Result for {toolCall.Name}]:\n{toolResult}" });
+
+            // Re-stream the follow-up LLM call
+            fullResponse.Clear();
+            await foreach (var followUpToken in provider.ChatStreamAsync(
+                systemPrompt, _conversationHistory, modelConfig.Model, cancellationToken))
+            {
+                fullResponse.Append(followUpToken);
+                yield return followUpToken;
+            }
+
+            response = fullResponse.ToString();
+        }
+
+        _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = response });
+        _turnCount++;
+
+        sw.Stop();
+
+        // Background extraction — tracked so it completes before next message or exit
+        var conversationText = $"User: {userMessage}\nAssistant: {response}";
+        var extractionPrompt = _promptBuilder.BuildEntityExtractionPrompt(conversationText);
+        var currentTurn = _turnCount;
+        var historySnapshot = _conversationHistory.ToList();
+        var extractionTask = Task.Run(async () =>
+        {
+            try
+            {
+                var extracted = await _entityExtractor.ExtractAndPersistAsync(conversationText, extractionPrompt);
+                await _graph.LogActionAsync(new AgentAction
+                {
+                    ActionType = "chat",
+                    Detail = userMessage[..Math.Min(200, userMessage.Length)],
+                    ModelUsed = $"{modelConfig.Provider}/{modelConfig.Model}",
+                    TokensIn = (systemPrompt.Length + userMessage.Length) / 4,
+                    TokensOut = response.Length / 4,
+                    DurationMs = (int)sw.ElapsedMilliseconds
+                });
+                _logger?.LogInformation("Entity extraction completed: {Count} entities", extracted.Count);
+                onEntitiesExtracted?.Invoke(extracted.Count);
+
+                if (_entityResolver is not null)
+                {
+                    try
+                    {
+                        await _entityResolver.FindAndMergeAsync(useLlmConfirmation: false);
+                        _logger?.LogInformation("Background deduplication completed");
+                    }
+                    catch (Exception dedupEx)
+                    {
+                        _logger?.LogWarning(dedupEx, "Background deduplication failed");
+                    }
+                }
+
+                if (currentTurn > 0 && currentTurn % _config.Memory.SummarizationInterval == 0)
+                {
+                    try
+                    {
+                        var convText = string.Join("\n", historySnapshot.Select(m => $"{m.Role}: {m.Content}"));
+                        var summaryPrompt = _promptBuilder.BuildInteractionSummaryPrompt(convText);
+                        var entityIds = extracted.Select(e => e.Id).ToList();
+                        await _summarizer.SummarizeAsync(convText, summaryPrompt, entityIds);
+                        _logger?.LogInformation("Interaction summarized at turn {Turn}", currentTurn);
+                    }
+                    catch (Exception sumEx)
+                    {
+                        _logger?.LogWarning(sumEx, "Background summarization failed at turn {Turn}", currentTurn);
+                    }
+                }
+
+                if (_compressor is not null && _config.Memory.CompressionEnabled)
+                {
+                    try
+                    {
+                        await _compressor.ArchiveStaleEntitiesAsync();
+                        _logger?.LogInformation("Background archival completed");
+                    }
+                    catch (Exception archiveEx)
+                    {
+                        _logger?.LogWarning(archiveEx, "Background archival failed");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Background processing failed (extraction or dedup).");
+            }
+        });
+        TrackExtraction(extractionTask);
+    }
+
+    private async Task<string> ExecuteToolWithTimeoutAsync(ToolCallRequest toolCall, CancellationToken cancellationToken)
+    {
+        if (_toolExecutor is null)
+            return "Error: No tool executor available.";
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(TimeSpan.FromSeconds(_config.Mcp.ToolCallTimeoutSeconds));
+
+        try
+        {
+            return await _toolExecutor.InvokeToolAsync("", toolCall.Name, toolCall.Arguments, cts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            var timeoutSec = _config.Mcp.ToolCallTimeoutSeconds;
+            _logger?.LogWarning("Tool '{ToolName}' timed out after {Timeout} seconds", toolCall.Name, timeoutSec);
+            return $"Error: Tool '{toolCall.Name}' timed out after {timeoutSec} seconds.";
+        }
+        catch (KeyNotFoundException)
+        {
+            _logger?.LogWarning("Tool '{ToolName}' not found", toolCall.Name);
+            return $"Error: Tool '{toolCall.Name}' not found. Check the tool name and try again.";
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Tool '{ToolName}' execution failed", toolCall.Name);
+            return $"Error executing tool '{toolCall.Name}': {ex.Message}";
+        }
+    }
+
+    private async Task<string> CallLlmAsync(
+        string systemPrompt,
+        string userMessage,
+        ModelProviderConfig modelConfig,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var provider = _providerFactory.GetRequiredProvider(modelConfig.Provider);
+            return await provider.ChatAsync(
+                systemPrompt, _conversationHistory, modelConfig.Model, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogWarning(ex, "Primary provider {Provider} failed, attempting fallback", modelConfig.Provider);
+
+            // Fallback: swap local <-> cloud
+            var fallbackConfig = modelConfig == _config.Models.Local
+                ? _config.Models.Cloud
+                : _config.Models.Local;
+
+            var fallback = _providerFactory.GetProvider(fallbackConfig.Provider);
+            if (fallback is not null)
+            {
+                try
+                {
+                    return await fallback.ChatAsync(
+                        systemPrompt, _conversationHistory, fallbackConfig.Model, cancellationToken);
+                }
+                catch (Exception fallbackEx)
+                {
+                    _logger?.LogError(fallbackEx, "Fallback provider {Provider} also failed", fallbackConfig.Provider);
+                }
+            }
+
+            return $"I encountered an error while processing your request. " +
+                   $"Both {modelConfig.Provider} and {fallbackConfig.Provider} are unavailable.";
+        }
+    }
+}

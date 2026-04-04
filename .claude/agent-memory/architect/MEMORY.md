@@ -9,9 +9,10 @@
 - **All services are concrete classes** (no interfaces) except IEmbeddingService and ILlmClient.
 - **Constructor-injected HttpClient** pattern used in OllamaEmbeddingService and OllamaLlmClient (for testability).
 
-## Interfaces (2 total)
+## Interfaces (3 total after US-2.1)
 - `IEmbeddingService` (Nexus.Memory) -> `OllamaEmbeddingService` (Nexus.Memory, impl uses EmbeddingOptions)
 - `ILlmClient` (Nexus.Memory) -> `OllamaLlmClient` (Nexus.Core, impl uses ModelProviderConfig)
+- `ILlmProvider` (Nexus.Core) -> `OllamaLlmProvider`, `GeminiLlmProvider` (Nexus.Core) -- full chat with history+streaming
 
 ## Project References (verified)
 - `Nexus.Core.csproj` -> `Nexus.Memory.csproj` (Core depends on Memory)
@@ -42,3 +43,7 @@
 - US-1.2: Gemini fallback as private method in EntityExtractor (not separate class) -- YAGNI
 - US-1.2: extractionPrompt as optional param for backward compat
 - US-1.2: KnowledgeGraph.GetEntityByNameAsync uses SQL LOWER() for case-insensitive match
+- US-2.1: ILlmProvider (Core) coexists with ILlmClient (Memory) -- different contracts (chat vs prompt)
+- US-2.1: LlmProviderFactory uses IEnumerable<ILlmProvider> DI multi-registration
+- US-2.1: ConversationMessage + AgentResponse extracted to own files from AgentService.cs
+- US-2.1: E2EFlowTests.cs line 249 manually constructs AgentService -- needs LlmProviderFactory param added

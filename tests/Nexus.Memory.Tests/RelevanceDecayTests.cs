@@ -1,5 +1,7 @@
 using Microsoft.Data.Sqlite;
-using Nexus.Memory;
+using Nexus.Memory.Infrastructure;
+using Nexus.Memory.Graph;
+using Nexus.Memory.Processing;
 using Nexus.Memory.Models;
 using Xunit;
 

@@ -8,9 +8,33 @@ models:
     model: qwen3:14b
     endpoint: http://localhost:11434
   cloud:
-    provider: anthropic
-    model: claude-sonnet-4-5-20250929
-    api_key: ${NEXUS_CLOUD_API_KEY}
+    provider: gemini              # gemini | anthropic | openai
+    model: gemini-2.5-flash-lite
+    # endpoint:                   # Optional custom endpoint for cloud provider
+
+  # Per-provider API keys (preferred over environment variables)
+  # Each provider can also have an optional custom endpoint.
+  gemini:
+    api_key: ${GEMINI_API_KEY}    # Or set GEMINI_API_KEY / GOOGLE_API_KEY env var
+    # endpoint:                   # Optional custom endpoint
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY} # Or set ANTHROPIC_API_KEY env var
+    # endpoint:                   # Optional custom endpoint
+  openai:
+    api_key: ${OPENAI_API_KEY}    # Or set OPENAI_API_KEY env var
+    # endpoint:                   # Optional custom endpoint
+
+  # --- Available Cloud Providers & Models ---
+  #
+  # provider: gemini
+  #   models: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-2.5-pro
+  #
+  # provider: anthropic
+  #   models: claude-sonnet-4-6 (recommended), claude-opus-4-6, claude-haiku-4-5
+  #
+  # provider: openai
+  #   models: gpt-4o-mini (cheapest), gpt-4o, o1-mini
+
   routing:
     entity_extraction: local
     interaction_summary: local
@@ -37,9 +61,40 @@ memory:
   working_threshold_mentions: 3
   archive_threshold_score: 0.05
   archive_threshold_days: 90
+  summarization_interval: 10          # Summarize conversation every N turns
+  recent_interactions_fetch_limit: 5  # Number of recent summaries to include in context
+  deduplication_threshold: 0.85       # Cosine similarity threshold for entity deduplication (0.0-1.0)
+  archive_path: ~/.nexus/archive/    # Directory for archived entity JSON files
+  compression_enabled: true          # Enable archival of stale Archive-level entities
 
 mcp:
-  servers: []
+  max_tool_call_iterations: 3      # Maximum LLM ↔ tool call round-trips per message (default: 3)
+  tool_call_timeout_seconds: 30    # Timeout per individual tool call in seconds (default: 30)
+  servers:
+    # Example: stdio transport (most common — runs a local command)
+    # - name: filesystem
+    #   transport: stdio
+    #   command: npx
+    #   args:
+    #     - "-y"
+    #     - "@modelcontextprotocol/server-filesystem"
+    #     - "/path/to/allowed/dir"
+    #   env:
+    #     NODE_ENV: production
+
+    # Example: Git MCP server (access git repositories)
+    # - name: git
+    #   transport: stdio
+    #   command: uvx
+    #   args:
+    #     - "mcp-server-git"
+    #     - "--repository"
+    #     - "/path/to/repo"
+
+    # Example: SSE transport (connects to a remote HTTP server)
+    # - name: remote-tools
+    #   transport: sse
+    #   url: http://localhost:3001/sse
 
 ui:
   theme: fluent

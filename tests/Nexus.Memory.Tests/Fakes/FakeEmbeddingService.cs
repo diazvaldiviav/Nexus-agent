@@ -1,3 +1,4 @@
+using Nexus.Memory.Abstractions;
 namespace Nexus.Memory.Tests.Fakes;
 
 public class FakeEmbeddingService : IEmbeddingService
@@ -15,10 +16,13 @@ public class FakeEmbeddingService : IEmbeddingService
 
     public List<string> CalledWithTexts { get; } = new();
 
+    public CancellationToken? LastCancellationToken { get; private set; }
+
     public Task<float[]> GenerateEmbeddingAsync(string text, CancellationToken cancellationToken = default)
     {
         CallCount++;
         CalledWithTexts.Add(text);
+        LastCancellationToken = cancellationToken;
         if (_exception is not null)
             throw _exception;
         return Task.FromResult(_fixedEmbedding ?? new float[768]);

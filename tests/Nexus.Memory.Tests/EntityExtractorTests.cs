@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
-using Nexus.Memory;
+using Nexus.Memory.Graph;
+using Nexus.Memory.Infrastructure;
 using Nexus.Memory.Models;
 using Nexus.Memory.Tests.Fakes;
 using Xunit;
@@ -18,24 +19,6 @@ public class EntityExtractorTests : IDisposable
         _dbInit = new DatabaseInitializer(_dbPath);
         _dbInit.Initialize();
         _graph = new KnowledgeGraph(_dbInit.ConnectionString);
-    }
-
-    // Hand-rolled mock for ILlmClient (single-method interface)
-    private sealed class MockLlmClient : ILlmClient
-    {
-        private readonly Func<string, Task<string>> _handler;
-        public string? LastPrompt { get; private set; }
-
-        public MockLlmClient(Func<string, Task<string>> handler)
-        {
-            _handler = handler;
-        }
-
-        public Task<string> GenerateAsync(string prompt, CancellationToken cancellationToken = default)
-        {
-            LastPrompt = prompt;
-            return _handler(prompt);
-        }
     }
 
     [Fact]

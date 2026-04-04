@@ -58,7 +58,7 @@ CAPA 2: MOTOR DE MEMORIA → KnowledgeGraph + SemanticSearch + EntityExtractor +
 CAPA 3: CONECTIVIDAD    → McpClientManager + ToolRegistry
 ```
 
-**Dependency flow:** Interface → Core → Memory + Connectors. **Never the reverse.**
+**Dependency flow:** Interface → Core → Memory. Connectors → Core (one-way). **No circular references.**
 
 ---
 
@@ -68,32 +68,62 @@ CAPA 3: CONECTIVIDAD    → McpClientManager + ToolRegistry
 nexus-agent/
 ├── src/
 │   ├── Nexus.Memory/             # Knowledge graph, embeddings, semantic search, decay
-│   │   ├── Models/               # Entity, Relation, Interaction POCOs
-│   │   ├── IEmbeddingService.cs  # Interface for text embedding generation
-│   │   ├── ILlmClient.cs        # Interface for LLM text generation (cross-layer)
-│   │   ├── EmbeddingOptions.cs   # Config record (Endpoint, Model, Dimensions)
-│   │   ├── OllamaEmbeddingService.cs # Ollama HTTP API embedding implementation
-│   │   ├── OpenAiEmbeddingService.cs # OpenAI HTTP API embedding implementation
-│   │   ├── KnowledgeGraph.cs     # SQLite CRUD for entities/relations/interactions
-│   │   ├── SemanticSearch.cs     # Embedding-based similarity search
-│   │   ├── EntityExtractor.cs   # LLM-based entity extraction with 3-level fallback + auto-embedding
-│   │   ├── MemoryContextBuilder.cs # Build 3-level memory context with semantic search
-│   │   ├── RelevanceDecay.cs    # Time-based relevance decay
-│   │   └── DatabaseInitializer.cs # SQLite schema setup
+│   │   ├── Abstractions/         # Interfaces (Nexus.Memory.Abstractions)
+│   │   │   ├── IKnowledgeGraph.cs   # Knowledge graph data access (19 methods, all with CancellationToken)
+│   │   │   ├── IEmbeddingService.cs  # Text embedding generation
+│   │   │   ├── ILlmClient.cs        # LLM text generation (cross-layer)
+│   │   │   └── IActionLogNotifier.cs # Real-time action log events
+│   │   ├── Embedding/            # Embedding services (Nexus.Memory.Embedding)
+│   │   │   ├── EmbeddingOptions.cs   # Config record (Endpoint, Model, Dimensions)
+│   │   │   ├── OllamaEmbeddingService.cs
+│   │   │   ├── OpenAiEmbeddingService.cs
+│   │   │   ├── GeminiEmbeddingService.cs
+│   │   │   └── FallbackEmbeddingService.cs
+│   │   ├── Graph/                # Knowledge graph + search (Nexus.Memory.Graph)
+│   │   │   ├── KnowledgeGraph.cs     # SQLite CRUD (implements IKnowledgeGraph + IActionLogNotifier)
+│   │   │   ├── SemanticSearch.cs     # Cosine similarity search
+│   │   │   ├── EntityExtractor.cs    # 3-level fallback extraction + auto-embedding
+│   │   │   └── EntityResolver.cs     # Duplicate detection + merge
+│   │   ├── Processing/           # Memory pipeline (Nexus.Memory.Processing)
+│   │   │   ├── InteractionSummarizer.cs  # LLM + heuristic fallback (IInteractionSummarizer)
+│   │   │   ├── MemoryContextBuilder.cs   # 3-level memory context with semantic search
+│   │   │   ├── MemoryCompressor.cs       # Archive + compress old interactions
+│   │   │   └── RelevanceDecay.cs         # Time-based decay + archival hook
+│   │   ├── Infrastructure/       # Database (Nexus.Memory.Infrastructure)
+│   │   │   └── DatabaseInitializer.cs
+│   │   └── Models/               # Entity, Relation, Interaction, DuplicatePair, ArchiveModels POCOs
 │   │
 │   ├── Nexus.Core/              # Agent orchestration, model routing, prompts
+│   │   ├── Abstractions/        # Interfaces (Nexus.Core.Abstractions)
+│   │   │   ├── IAgentService.cs    # ChatStreamAsync, ClearHistoryAsync, FlushPendingExtractionAsync
+│   │   │   ├── ILlmProvider.cs     # ChatAsync, ChatStreamAsync
+│   │   │   └── IToolExecutor.cs    # Cross-layer (impl in Connectors)
+│   │   ├── Providers/           # LLM providers (Nexus.Core.Providers)
+│   │   │   ├── OllamaLlmProvider.cs
+│   │   │   ├── GeminiLlmProvider.cs
+│   │   │   ├── AnthropicLlmProvider.cs
+│   │   │   ├── OpenAiLlmProvider.cs
+│   │   │   ├── OllamaLlmClient.cs  # ILlmClient impl via Ollama HTTP
+│   │   │   └── LlmProviderFactory.cs
+│   │   ├── Services/            # Orchestration (Nexus.Core.Services)
+│   │   │   ├── AgentService.cs      # Main agent loop
+│   │   │   ├── ModelRouter.cs       # Local vs cloud selection
+│   │   │   ├── PromptBuilder.cs     # Memory context + tool definitions
+│   │   │   └── ToolCallParser.cs    # [TOOL_CALL: {...}] parser
+│   │   ├── Models/              # POCOs (Nexus.Core.Models)
+│   │   │   ├── AgentResponse.cs
+│   │   │   └── ConversationMessage.cs
 │   │   ├── Config/
-│   │   │   ├── ConfigLoader.cs  # YAML config loading
-│   │   │   └── NexusConfig.cs   # Configuration model
-│   │   ├── AgentService.cs      # Main agent loop
-│   │   ├── ModelRouter.cs       # Select local vs cloud LLM
-│   │   ├── OllamaLlmClient.cs  # ILlmClient implementation via Ollama HTTP API
-│   │   ├── PromptBuilder.cs     # Build LLM prompts with memory context
-│   │   └── ServiceCollectionExtensions.cs # DI registration
+│   │   │   ├── ConfigLoader.cs
+│   │   │   ├── NexusConfig.cs
+│   │   │   └── ConfigValidator.cs
+│   │   └── ServiceCollectionExtensions.cs # DI registration (stays at root)
 │   │
-│   ├── Nexus.Connectors/        # External tool connectivity
-│   │   ├── McpClientManager.cs  # MCP protocol client
-│   │   └── ToolRegistry.cs      # Available tools registry
+│   ├── Nexus.Connectors/        # External tool connectivity (MCP SDK)
+│   │   ├── McpClientManager.cs  # MCP client: stdio/SSE transport, tool discovery, invocation
+│   │   ├── ToolRegistry.cs      # Dynamic tool registry (ConcurrentDictionary, thread-safe)
+│   │   ├── McpToolExecutor.cs   # IToolExecutor impl: routes tool calls through MCP
+│   │   └── McpServiceCollectionExtensions.cs # AddNexusMcp() DI extension
 │   │
 │   ├── Nexus.Desktop/           # Avalonia UI (MVVM)
 │   │   ├── Views/               # AXAML views
@@ -102,20 +132,27 @@ nexus-agent/
 │   │   │   ├── SettingsView.axaml
 │   │   │   └── ActionLogView.axaml
 │   │   ├── ViewModels/          # MVVM ViewModels
-│   │   │   ├── ChatViewModel.cs
-│   │   │   ├── MemoryGraphViewModel.cs
-│   │   │   ├── SettingsViewModel.cs
-│   │   │   └── ActionLogViewModel.cs
+│   │   │   ├── ChatViewModel.cs  # Chat MVVM: ChatMessage (ObservableObject, IsAssistantNormal computed) + streaming, HasMessages, SetExamplePromptCommand, error handling (HasError/ErrorMessage/ErrorDetail), RetryCommand, DismissErrorCommand, DispatchToUI virtual
+│   │   │   ├── ErrorClassifier.cs  # Static error classifier: HttpRequestException→connection, TaskCanceledException→timeout, unauthorized→apikey, default→generic
+│   │   │   ├── MemoryGraphViewModel.cs  # Graph VM: HasNodes computed property
+│   │   │   ├── SettingsViewModel.cs  # Settings MVVM: ConfigValidator integration, IsDirty/SettingsSnapshot dirty tracking, CanSave guard, inline validation errors, ApiKeyWarning, HasError/HasSuccess banners
+│   │   │   └── ActionLogViewModel.cs  # Action log VM: HasActions computed property, DispatchToUI virtual
+│   │   ├── Layout/
+│   │   │   └── ForceDirectedLayout.cs  # Fruchterman-Reingold force-directed graph layout
 │   │   └── Controls/
-│   │       └── GraphCanvas.cs   # Custom graph rendering control
+│   │       ├── GraphCanvas.cs   # Custom graph rendering control with cached ImmutableBrush/Pen, nodeLookup cache
+│   │       ├── MarkdownRenderer.cs  # Static helper: markdown string → IReadOnlyList<Control> via Markdig AST (Catppuccin Mocha palette, DisableHtml security)
+│   │       └── MarkdownTextBlock.cs  # UserControl: StyledProperty<string?> Text, 250ms DispatcherTimer debounce, attach/detach lifecycle
 │   │
 │   └── Nexus.CLI/               # Terminal interface
-│       └── Program.cs           # Spectre.Console chat loop
+│       ├── OnboardingWizard.cs  # First-use setup wizard: 7-step (Ollama, chat model, embed model, API keys, MCP filesystem, config gen, save with overwrite protection)
+│       └── Program.cs           # Spectre.Console chat loop + memory/connect/disconnect/servers/init commands
 │
 ├── tests/
 │   ├── Nexus.Memory.Tests/      # Memory layer tests
 │   ├── Nexus.Core.Tests/        # Core orchestration tests
-│   └── Nexus.Integration.Tests/ # End-to-end tests
+│   ├── Nexus.Integration.Tests/ # End-to-end tests
+│   └── Nexus.Desktop.Tests/     # Desktop ViewModel tests (Avalonia.Headless.XUnit)
 │
 ├── docs/                        # Documentation
 │   ├── user-requirements.md
@@ -142,14 +179,51 @@ nexus-agent/
 ## Key Conventions
 
 ### DI Registration
-All services registered in `src/Nexus.Core/ServiceCollectionExtensions.cs`:
+Core services in `src/Nexus.Core/ServiceCollectionExtensions.cs` via `AddNexusAgent()`.
+MCP services in `src/Nexus.Connectors/McpServiceCollectionExtensions.cs` via `AddNexusMcp()`:
 ```csharp
 // IEmbeddingService uses DI factory for provider selection (ollama | openai)
 services.AddSingleton<IEmbeddingService>(sp => config.Embeddings.Provider == "openai"
     ? new OpenAiEmbeddingService(options, apiKey)
     : new OllamaEmbeddingService(options));
 services.AddSingleton<ILlmClient, OllamaLlmClient>(); // Cross-layer: interface in Memory, impl in Core
-services.AddSingleton<IKnowledgeGraph, KnowledgeGraph>();
+// KnowledgeGraph registered as both IKnowledgeGraph and IActionLogNotifier (same instance, Sprint 4 Day 2)
+var knowledgeGraph = new KnowledgeGraph(dbInit.ConnectionString);
+services.AddSingleton<IKnowledgeGraph>(knowledgeGraph);
+services.AddSingleton<IActionLogNotifier>(knowledgeGraph);
+
+// ILlmProvider multi-registration (Sprint 2): each provider registered separately
+// API keys resolved via config.Models.GetApiKey("provider") — 3-tier fallback:
+//   Tier 1: models.gemini.api_key (dedicated section)
+//   Tier 2: models.cloud.api_key (legacy, when cloud.provider matches)
+//   Tier 3: GEMINI_API_KEY env var
+services.AddSingleton<ILlmProvider>(sp => new OllamaLlmProvider(config.Models.Local)); // always
+services.AddSingleton<ILlmProvider>(sp => new GeminiLlmProvider(key, ...));    // if GetApiKey("gemini")
+services.AddSingleton<ILlmProvider>(sp => new AnthropicLlmProvider(key, ...)); // if GetApiKey("anthropic")
+services.AddSingleton<ILlmProvider>(sp => new OpenAiLlmProvider(key, ...));    // if GetApiKey("openai")
+services.AddSingleton<LlmProviderFactory>(); // resolves all ILlmProvider via IEnumerable
+services.AddSingleton<IInteractionSummarizer, InteractionSummarizer>(); // LLM summary + heuristic fallback
+services.AddSingleton(sp => new EntityResolver(
+    sp.GetRequiredService<IKnowledgeGraph>(),
+    sp.GetService<IEmbeddingService>(),
+    sp.GetService<ILlmClient>(),
+    config.Memory.DeduplicationThreshold,
+    sp.GetService<ILogger<EntityResolver>>())); // Entity dedup: find + merge duplicates
+services.AddSingleton(sp => new MemoryCompressor(
+    sp.GetRequiredService<IKnowledgeGraph>(),
+    ConfigLoader.GetArchivePath(config),
+    config.Memory.ArchiveThresholdDays,
+    sp.GetService<ILogger<MemoryCompressor>>())); // Archive stale entities to JSON
+services.AddSingleton(sp => new PromptBuilder(
+    sp.GetRequiredService<MemoryContextBuilder>(), config.Agent,
+    sp.GetService<IToolExecutor>()));  // Optional IToolExecutor for tool definitions in prompt
+// IAgentService forwarding registration (Sprint 4 Day 3): Desktop resolves IAgentService, CLI resolves AgentService
+services.AddSingleton<IAgentService>(sp => sp.GetRequiredService<AgentService>());
+
+// MCP connectivity (registered separately via AddNexusMcp()):
+services.AddSingleton<McpClientManager>();  // MCP SDK client (stdio + SSE transports)
+services.AddSingleton<ToolRegistry>();      // Dynamic tool registry from MCP servers
+services.AddSingleton<IToolExecutor, McpToolExecutor>(); // Cross-layer: interface in Core, impl in Connectors
 ```
 
 ### Configuration Model
@@ -157,11 +231,19 @@ services.AddSingleton<IKnowledgeGraph, KnowledgeGraph>();
 ```csharp
 public class NexusConfig
 {
-    public OllamaConfig Ollama { get; set; } = new();
+    public AgentConfig Agent { get; set; } = new();
+    public ModelsConfig Models { get; set; } = new();
     public EmbeddingsConfig Embeddings { get; set; } = new();
     public MemoryConfig Memory { get; set; } = new();
     public McpConfig Mcp { get; set; } = new();
+    public UiConfig Ui { get; set; } = new();
 }
+// ModelsConfig has: Local, Cloud, Routing, Gemini?, Anthropic?, OpenAi?
+// Per-provider keys: models.gemini.api_key, models.anthropic.api_key, models.openai.api_key
+// Resolved via ModelsConfig.GetApiKey("provider") — 3-tier fallback
+// McpConfig has: List<McpServerEntry> Servers, MaxToolCallIterations (int, default 3), ToolCallTimeoutSeconds (int, default 30)
+// McpServerEntry has: Name, Transport ("stdio"|"sse"), Command?, Args (List<string>), Url?, Env (Dict<string,string>)
+// MemoryConfig has: SummarizationInterval (int, default 10), RecentInteractionsFetchLimit (int, default 5), DeduplicationThreshold (double, default 0.85), ArchivePath (string, default "~/.nexus/archive/"), CompressionEnabled (bool, default true), ArchiveThresholdDays (int, default 90)
 ```
 
 ### Database
@@ -195,5 +277,9 @@ Glob: src/Nexus.Desktop/**/*.cs     — All desktop UI files
 Glob: src/Nexus.CLI/**/*.cs         — CLI files
 Grep: "interface I"                 — Find existing interfaces
 Grep: "class.*Service"              — Find existing services
+
+Namespace structure (Sprint 4 Day 6 reorg):
+  Nexus.Core:    Abstractions/ Providers/ Services/ Models/ Config/
+  Nexus.Memory:  Abstractions/ Embedding/ Graph/ Processing/ Infrastructure/ Models/
 Grep: "TODO|HACK|STUB"             — Find incomplete work
 ```

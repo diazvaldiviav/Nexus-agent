@@ -4,7 +4,11 @@
 
     <DockPanel>
         <Border DockPanel.Dock="Top" Padding="16,12" BorderThickness="0,0,0,1" BorderBrush="#313244">
-            <TextBlock Text="Settings" FontSize="18" FontWeight="SemiBold" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBlock Text="Settings" FontSize="18" FontWeight="SemiBold" />
+                <TextBlock Text="(unsaved changes)" FontSize="14" Foreground="#f9e2af"
+                           IsVisible="{Binding IsDirty}" VerticalAlignment="Center" />
+            </StackPanel>
         </Border>
 
         <ScrollViewer>
@@ -13,7 +17,7 @@
                 <!-- Local Model -->
                 <StackPanel Spacing="12">
                     <TextBlock Text="Local Model (Ollama)" FontWeight="SemiBold" FontSize="14" />
-                    <Grid ColumnDefinitions="140,*" RowDefinitions="Auto,Auto">
+                    <Grid ColumnDefinitions="140,*" RowDefinitions="Auto,Auto,Auto">
                         <TextBlock Grid.Row="0" Grid.Column="0" Text="Model:" VerticalAlignment="Center" />
                         <ComboBox Grid.Row="0" Grid.Column="1"
                                   ItemsSource="{Binding AvailableLocalModels}"
@@ -21,13 +25,17 @@
 
                         <TextBlock Grid.Row="1" Grid.Column="0" Text="Endpoint:" VerticalAlignment="Center" Margin="0,8,0,0" />
                         <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding LocalEndpoint}" Margin="0,8,0,0" />
+                        <TextBlock Grid.Row="2" Grid.Column="1"
+                                   Text="{Binding LocalEndpointError}" Foreground="#f38ba8" FontSize="11"
+                                   IsVisible="{Binding LocalEndpointError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                   Margin="0,2,0,0" />
                     </Grid>
                 </StackPanel>
 
                 <!-- Cloud Model -->
                 <StackPanel Spacing="12">
                     <TextBlock Text="Cloud Model" FontWeight="SemiBold" FontSize="14" />
-                    <Grid ColumnDefinitions="140,*" RowDefinitions="Auto,Auto,Auto">
+                    <Grid ColumnDefinitions="140,*" RowDefinitions="Auto,Auto">
                         <TextBlock Grid.Row="0" Grid.Column="0" Text="Provider:" VerticalAlignment="Center" />
                         <ComboBox Grid.Row="0" Grid.Column="1"
                                   ItemsSource="{Binding AvailableCloudProviders}"
@@ -35,22 +43,65 @@
 
                         <TextBlock Grid.Row="1" Grid.Column="0" Text="Model:" VerticalAlignment="Center" Margin="0,8,0,0" />
                         <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding CloudModel}" Margin="0,8,0,0" />
+                    </Grid>
+                </StackPanel>
 
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="API Key:" VerticalAlignment="Center" Margin="0,8,0,0" />
-                        <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding CloudApiKey}"
+                <!-- API Keys -->
+                <StackPanel Spacing="12">
+                    <TextBlock Text="API Keys" FontWeight="SemiBold" FontSize="14" />
+                    <Grid ColumnDefinitions="140,*" RowDefinitions="Auto,Auto,Auto">
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Gemini:" VerticalAlignment="Center" />
+                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding GeminiApiKey}"
+                                 PasswordChar="*" />
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Anthropic:" VerticalAlignment="Center" Margin="0,8,0,0" />
+                        <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding AnthropicApiKey}"
+                                 PasswordChar="*" Margin="0,8,0,0" />
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="OpenAI:" VerticalAlignment="Center" Margin="0,8,0,0" />
+                        <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding OpenAiApiKey}"
                                  PasswordChar="*" Margin="0,8,0,0" />
                     </Grid>
+                    <Border CornerRadius="4" Padding="8,6"
+                            IsVisible="{Binding ApiKeyWarning, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                            Background="#4df9e2af" Margin="0,4,0,0">
+                        <TextBlock Text="{Binding ApiKeyWarning}" Foreground="#f9e2af" FontSize="12" />
+                    </Border>
                 </StackPanel>
 
                 <!-- Memory -->
                 <StackPanel Spacing="12">
                     <TextBlock Text="Memory Settings" FontWeight="SemiBold" FontSize="14" />
-                    <Grid ColumnDefinitions="200,*" RowDefinitions="Auto">
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Decay Lambda (0.01-0.5):" VerticalAlignment="Center" />
+                    <Grid ColumnDefinitions="200,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto">
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Decay Lambda (0.001-1.0):" VerticalAlignment="Center" />
                         <NumericUpDown Grid.Row="0" Grid.Column="1"
                                        Value="{Binding DecayLambda}"
-                                       Minimum="0.01" Maximum="0.5" Increment="0.01"
-                                       FormatString="F2" />
+                                       Minimum="0.001" Maximum="1.0" Increment="0.001"
+                                       FormatString="F3" />
+                        <TextBlock Grid.Row="1" Grid.Column="1"
+                                   Text="{Binding DecayLambdaError}" Foreground="#f38ba8" FontSize="11"
+                                   IsVisible="{Binding DecayLambdaError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                   Margin="0,2,0,0" />
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Summarize every N turns:" VerticalAlignment="Center" Margin="0,8,0,0" />
+                        <NumericUpDown Grid.Row="2" Grid.Column="1"
+                                       Value="{Binding SummarizationInterval}"
+                                       Minimum="1" Maximum="100" Increment="1"
+                                       FormatString="F0" Margin="0,8,0,0" />
+                        <TextBlock Grid.Row="3" Grid.Column="1"
+                                   Text="{Binding SummarizationIntervalError}" Foreground="#f38ba8" FontSize="11"
+                                   IsVisible="{Binding SummarizationIntervalError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                   Margin="0,2,0,0" />
+
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Recent summaries in context:" VerticalAlignment="Center" Margin="0,8,0,0" />
+                        <NumericUpDown Grid.Row="4" Grid.Column="1"
+                                       Value="{Binding RecentInteractionsFetchLimit}"
+                                       Minimum="1" Maximum="50" Increment="1"
+                                       FormatString="F0" Margin="0,8,0,0" />
+                        <TextBlock Grid.Row="5" Grid.Column="1"
+                                   Text="{Binding RecentInteractionsFetchLimitError}" Foreground="#f38ba8" FontSize="11"
+                                   IsVisible="{Binding RecentInteractionsFetchLimitError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                   Margin="0,2,0,0" />
                     </Grid>
                 </StackPanel>
 
@@ -58,7 +109,14 @@
                 <StackPanel Spacing="8">
                     <Button Content="Save Settings" Command="{Binding SaveSettingsCommand}"
                             HorizontalAlignment="Left" Padding="16,8" />
-                    <TextBlock Text="{Binding StatusMessage}" Opacity="0.7" FontSize="12" />
+                    <!-- Success banner -->
+                    <Border CornerRadius="4" Padding="8,6" IsVisible="{Binding HasSuccess}" Background="#4da6e3a1" Margin="0,8,0,0">
+                        <TextBlock Text="{Binding StatusMessage}" Foreground="#a6e3a1" FontSize="12" />
+                    </Border>
+                    <!-- Error banner -->
+                    <Border CornerRadius="4" Padding="8,6" IsVisible="{Binding HasError}" Background="#4df38ba8" Margin="0,8,0,0">
+                        <TextBlock Text="{Binding StatusMessage}" Foreground="#f38ba8" FontSize="12" />
+                    </Border>
                 </StackPanel>
 
             </StackPanel>

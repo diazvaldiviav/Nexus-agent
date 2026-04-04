@@ -1,14 +1,16 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using Nexus.Memory;
+using Nexus.Memory.Abstractions;
 using Nexus.Memory.Models;
 using System.Collections.ObjectModel;
 
 namespace Nexus.Desktop.ViewModels;
 
-public partial class ActionLogViewModel : ObservableObject
+public partial class ActionLogViewModel : ObservableObject, IDisposable
 {
-    private readonly KnowledgeGraph _graph;
+    private readonly IKnowledgeGraph _graph;
+    private readonly IActionLogNotifier _notifier;
+    private bool _disposed;
 
     [ObservableProperty] private bool _isLoading;
     [ObservableProperty] private string _filterType = "All";
@@ -17,9 +19,14 @@ public partial class ActionLogViewModel : ObservableObject
     public ObservableCollection<string> ActionTypes { get; } = new(
         new[] { "All", "chat", "entity_extraction", "summarize", "decay" });
 
-    public ActionLogViewModel(KnowledgeGraph graph)
+    public bool HasActions => Actions.Count > 0;
+
+    public ActionLogViewModel(IKnowledgeGraph graph, IActionLogNotifier notifier)
     {
-        _graph = graph;
+        _graph = graph ?? throw new ArgumentNullException(nameof(graph));
+        _notifier = notifier ?? throw new ArgumentNullException(nameof(notifier));
+        _notifier.ActionLogged += OnActionLogged;
+        Actions.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasActions));
     }
 
     [RelayCommand]
@@ -45,4 +52,23 @@ public partial class ActionLogViewModel : ObservableObject
     }
 
     partial void OnFilterTypeChanged(string value) => _ = LoadActionsAsync();
+
+    private void OnActionLogged(AgentAction action)
+    {
+        if (_disposed) return;
+        if (IsLoading) return;
+        if (FilterType != "All" && action.ActionType != FilterType) return;
+        DispatchToUI(() => Actions.Insert(0, action));
+    }
+
+    protected virtual void DispatchToUI(Action action)
+        => Avalonia.Threading.Dispatcher.UIThread.Post(action);
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _notifier.ActionLogged -= OnActionLogged;
+        GC.SuppressFinalize(this);
+    }
 }

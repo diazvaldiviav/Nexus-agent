@@ -1,4 +1,4 @@
-using Nexus.Core;
+using Nexus.Core.Services;
 using Nexus.Core.Config;
 using Xunit;
 
