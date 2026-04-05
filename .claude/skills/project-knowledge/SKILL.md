@@ -144,15 +144,61 @@ nexus-agent/
 │   │       ├── MarkdownRenderer.cs  # Static helper: markdown string → IReadOnlyList<Control> via Markdig AST (Catppuccin Mocha palette, DisableHtml security)
 │   │       └── MarkdownTextBlock.cs  # UserControl: StyledProperty<string?> Text, 250ms DispatcherTimer debounce, attach/detach lifecycle
 │   │
-│   └── Nexus.CLI/               # Terminal interface
-│       ├── OnboardingWizard.cs  # First-use setup wizard: 7-step (Ollama, chat model, embed model, API keys, MCP filesystem, config gen, save with overwrite protection)
-│       └── Program.cs           # Spectre.Console chat loop + memory/connect/disconnect/servers/init commands
+│   ├── Nexus.CLI/               # Terminal interface
+│   │   ├── OnboardingWizard.cs  # First-use setup wizard: 7-step (Ollama, chat model, embed model, API keys, MCP filesystem, config gen, save with overwrite protection)
+│   │   └── Program.cs           # Spectre.Console chat loop + memory/connect/disconnect/servers/init commands
+│   │
+│   ├── Nexus.Hardware/          # Hardware Intelligence — pure contracts (ZERO NuGet deps)
+│   │   ├── Abstractions/        # Profiler interfaces (Nexus.Hardware.Abstractions)
+│   │   │   ├── ICpuProfiler.cs      # Task<CpuEnvelope> ProfileAsync(ct)
+│   │   │   ├── IRamProfiler.cs      # Task<RamEnvelope> ProfileAsync(ct)
+│   │   │   ├── IGpuProfiler.cs      # Task<GpuEnvelope> ProfileAsync(ct)
+│   │   │   ├── IHostProfiler.cs     # Task<HostCapabilityProfile> BuildProfileAsync(ct)
+│   │   │   └── ISensorMonitor.cs    # Task<SensorSnapshot> ReadAsync(ct) + bool IsAvailable
+│   │   ├── States/              # Discrete state enums (Nexus.Hardware.States)
+│   │   │   ├── CpuState.cs          # Weak, Moderate, Strong, HighEnd
+│   │   │   ├── RamState.cs          # Tight, Adequate, Comfortable, Abundant
+│   │   │   ├── GpuState.cs          # None, Limited, Capable, Strong
+│   │   │   ├── ArchitectureState.cs # NativeOptimal, NativeCompatible, EmulatedPenalty, Unsupported
+│   │   │   ├── FeasibilityResult.cs # Rejected, FeasibleWithCaution, Feasible, Optimal
+│   │   │   ├── PlacementStrategy.cs # CpuOnly, GpuFull, GpuPartial, HybridFallback
+│   │   │   ├── SafetyLevel.cs       # Unsafe, Caution, Safe, Comfortable
+│   │   │   └── PressureLevel.cs     # None, Low, Medium, High, Critical
+│   │   ├── Envelopes/           # Hardware measurement snapshots (Nexus.Hardware.Envelopes)
+│   │   │   ├── CpuEnvelope.cs       # 5-param record + IsViable() → CpuInferenceScore > 0
+│   │   │   ├── RamEnvelope.cs       # 4-param record + IsViable() → SafeModelRamBudget > 0
+│   │   │   └── GpuEnvelope.cs       # 6-param record + IsViable() → true, NoGpu() factory
+│   │   ├── Monitoring/           # Runtime sensor/health data (Nexus.Hardware.Monitoring)
+│   │   │   ├── SensorSnapshot.cs    # 6-field record (CpuTemp, GpuTemp, CpuClock, CpuLoad, GpuLoad, ReadAt)
+│   │   │   └── SystemHealthSnapshot.cs # 4-field record (CpuUsage, AvailableRam, PagesPerSec, ReadAt)
+│   │   ├── HostCapabilityProfile.cs # 11-param aggregate record (envelopes + states + Architecture + DateTime)
+│   │   └── HostStateClassifier.cs   # Static classifier: ClassifyCpu/Ram/Gpu → state enums via thresholds
+│   │
+│   ├── Nexus.Hardware.Windows/  # Windows-specific hardware detection (WMI, DXGI, P/Invoke)
+│   │   ├── Internals/           # Internal abstractions (Nexus.Hardware.Windows.Internals)
+│   │   │   ├── IWmiQuery.cs         # Internal interface: Query(string wql) → IReadOnlyList<IReadOnlyDictionary>
+│   │   │   ├── WmiQueryService.cs   # Internal sealed: ManagementObjectSearcher with COM disposal
+│   │   │   ├── IDxgiAdapterProvider.cs # Internal interface: GetAdapters() → IReadOnlyList<DxgiAdapterInfo>
+│   │   │   ├── DxgiAdapterProvider.cs # Internal sealed: IDxgiAdapterProvider impl via Vortice.DXGI COM interop
+│   │   │   ├── DxgiAdapterInfo.cs   # Internal record: 7 fields (Description, VendorId, Memory, etc.)
+│   │   │   └── MemoryStatusResult.cs # Internal record: 5 fields (MemoryLoad, Physical, PageFile)
+│   │   └── Profilers/           # Hardware profiler implementations (Nexus.Hardware.Windows.Profilers)
+│   │       ├── WmiCpuProfiler.cs    # Internal sealed: ICpuProfiler via WMI + SIMD intrinsics
+│   │       ├── Win32RamProfiler.cs  # Internal partial: IRamProfiler via P/Invoke GlobalMemoryStatusEx
+│   │       └��─ DxgiGpuProfiler.cs   # Internal sealed: IGpuProfiler via IDxgiAdapterProvider
+│   ├── Nexus.Models/            # LLM model domain (candidates, profiles, catalog)
+│   ├── Nexus.Recommendation/   # Decision engine (gates, scoring, ranking)
+│   ├── Nexus.Distribution/     # Model download from sources
+│   ├── Nexus.ModelRegistry/    # Local installed model tracking
+│   └── Nexus.Runtime/          # Runtime abstractions (model + registry integration)
 │
 ├── tests/
 │   ├── Nexus.Memory.Tests/      # Memory layer tests
 │   ├── Nexus.Core.Tests/        # Core orchestration tests
 │   ├── Nexus.Integration.Tests/ # End-to-end tests
-│   └── Nexus.Desktop.Tests/     # Desktop ViewModel tests (Avalonia.Headless.XUnit)
+│   ├── Nexus.Desktop.Tests/     # Desktop ViewModel tests (Avalonia.Headless.XUnit)
+│   ├── Nexus.Hardware.Tests/    # Hardware tests: enums, envelopes, profile, classifier, WmiCpuProfiler, Win32RamProfiler, records (101 tests)
+│   └── Nexus.Models.Tests/      # Model domain tests
 │
 ├── docs/                        # Documentation
 │   ├── user-requirements.md
@@ -275,6 +321,8 @@ Glob: src/Nexus.Core/**/*.cs        — All core layer files
 Glob: src/Nexus.Connectors/**/*.cs  — All connector files
 Glob: src/Nexus.Desktop/**/*.cs     — All desktop UI files
 Glob: src/Nexus.CLI/**/*.cs         — CLI files
+Glob: src/Nexus.Hardware/**/*.cs   — Hardware contracts (enums, interfaces)
+Glob: src/Nexus.Models/**/*.cs     — Model domain types
 Grep: "interface I"                 — Find existing interfaces
 Grep: "class.*Service"              — Find existing services
 
