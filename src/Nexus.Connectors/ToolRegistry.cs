@@ -95,6 +95,8 @@ public class ToolRegistry
 
     /// <summary>
     /// Returns a formatted string of all registered tools suitable for LLM prompts.
+    /// Renders parameter schemas as human-readable text instead of raw JSON Schema
+    /// so that smaller models can reliably use the correct parameter names.
     /// </summary>
     public string GetToolDefinitionsForPrompt()
     {
@@ -107,9 +109,37 @@ public class ToolRegistry
         foreach (var tool in _tools.Values)
         {
             sb.AppendLine($"- {tool.Name}: {tool.Description}");
-            if (tool.InputSchema.HasValue)
+
+            if (!tool.InputSchema.HasValue)
+                continue;
+
+            var schema = tool.InputSchema.Value;
+            var required = new HashSet<string>(StringComparer.Ordinal);
+            if (schema.TryGetProperty("required", out var reqArray) &&
+                reqArray.ValueKind == JsonValueKind.Array)
             {
-                sb.AppendLine($"  Parameters: {tool.InputSchema.Value.GetRawText()}");
+                foreach (var item in reqArray.EnumerateArray())
+                {
+                    var name = item.GetString();
+                    if (name is not null) required.Add(name);
+                }
+            }
+
+            if (schema.TryGetProperty("properties", out var props) &&
+                props.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var prop in props.EnumerateObject())
+                {
+                    var paramType = prop.Value.TryGetProperty("type", out var t)
+                        ? t.GetString() ?? "any"
+                        : "any";
+                    var desc = prop.Value.TryGetProperty("description", out var d)
+                        ? d.GetString() ?? ""
+                        : "";
+                    var reqTag = required.Contains(prop.Name) ? "REQUIRED" : "optional";
+
+                    sb.AppendLine($"    {prop.Name} ({paramType}, {reqTag}): {desc}");
+                }
             }
         }
 

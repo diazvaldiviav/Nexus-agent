@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Nexus.Connectors;
 
 namespace Nexus.Integration.Tests;
@@ -104,5 +105,67 @@ public class ToolRegistryTests
         Assert.Contains("Available tools:", prompt);
         Assert.Contains("- read_file: Reads a file", prompt);
         Assert.Contains("- search: Searches the web", prompt);
+    }
+
+    [Fact]
+    public void GetToolDefinitionsForPrompt_RendersParametersAsHumanReadableText()
+    {
+        var schema = JsonDocument.Parse("""
+        {
+            "type": "object",
+            "properties": {
+                "source": { "type": "string", "description": "Source file path" },
+                "destination": { "type": "string", "description": "Destination path" }
+            },
+            "required": ["source", "destination"]
+        }
+        """).RootElement;
+
+        var registry = new ToolRegistry();
+        registry.RegisterTool(new ToolDefinition
+        {
+            Name = "move_file",
+            Description = "Move or rename files and directories",
+            ServerName = "fs",
+            InputSchema = schema
+        });
+
+        var prompt = registry.GetToolDefinitionsForPrompt();
+
+        Assert.Contains("- move_file: Move or rename files and directories", prompt);
+        Assert.Contains("source (string, REQUIRED): Source file path", prompt);
+        Assert.Contains("destination (string, REQUIRED): Destination path", prompt);
+        // Must NOT contain raw JSON schema
+        Assert.DoesNotContain("\"type\"", prompt);
+        Assert.DoesNotContain("\"properties\"", prompt);
+    }
+
+    [Fact]
+    public void GetToolDefinitionsForPrompt_MarksOptionalParams()
+    {
+        var schema = JsonDocument.Parse("""
+        {
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "File path" },
+                "encoding": { "type": "string", "description": "File encoding" }
+            },
+            "required": ["path"]
+        }
+        """).RootElement;
+
+        var registry = new ToolRegistry();
+        registry.RegisterTool(new ToolDefinition
+        {
+            Name = "read_file",
+            Description = "Reads a file",
+            ServerName = "fs",
+            InputSchema = schema
+        });
+
+        var prompt = registry.GetToolDefinitionsForPrompt();
+
+        Assert.Contains("path (string, REQUIRED): File path", prompt);
+        Assert.Contains("encoding (string, optional): File encoding", prompt);
     }
 }

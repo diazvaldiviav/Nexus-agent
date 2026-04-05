@@ -68,6 +68,8 @@ public class PromptBuilder
             builder.AppendLine("1. The [TOOL_CALL: ...] line must be the ONLY content in your response. No text before or after.");
             builder.AppendLine("2. After the tool executes, you will receive the result and can then respond to the user.");
             builder.AppendLine("3. If you need to perform an action but no suitable tool exists, tell the user you cannot do it and suggest alternatives.");
+            builder.AppendLine("4. ALWAYS use absolute paths (e.g. D:\\Nexus\\file.txt), NEVER relative paths (e.g. file.txt or ./file.txt).");
+            builder.AppendLine("5. Use ONLY the exact parameter names listed in the tool definitions above. Do NOT invent parameter names.");
         }
         else
         {
