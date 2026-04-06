@@ -277,13 +277,15 @@ public static class OnboardingWizard
                 Local = new ModelProviderConfig
                 {
                     Provider = "ollama",
-                    Model = chatModel
+                    Model = chatModel,
+                    Endpoint = "http://localhost:11434"
                 }
             },
             Embeddings = new EmbeddingsConfig
             {
                 Provider = "ollama",
-                Model = embedModel
+                Model = embedModel,
+                Endpoint = "http://localhost:11434"
             }
         };
 

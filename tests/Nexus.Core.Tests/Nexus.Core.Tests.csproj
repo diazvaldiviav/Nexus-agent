@@ -19,6 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Nexus.Connectors\Nexus.Connectors.csproj" />
     <ProjectReference Include="..\..\src\Nexus.Core\Nexus.Core.csproj" />
     <ProjectReference Include="..\..\src\Nexus.Desktop\Nexus.Desktop.csproj" />
   </ItemGroup>

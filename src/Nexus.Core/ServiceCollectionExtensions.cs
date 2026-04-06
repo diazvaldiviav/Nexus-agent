@@ -191,6 +191,7 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<LlmProviderFactory>(),
             sp.GetRequiredService<IInteractionSummarizer>(),
             sp.GetService<IToolExecutor>(),
+            sp.GetService<IToolArgumentValidator>(),
             sp.GetService<EntityResolver>(),
             sp.GetService<MemoryCompressor>(),
             sp.GetService<ILogger<AgentService>>()));

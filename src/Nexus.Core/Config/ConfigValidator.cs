@@ -22,7 +22,8 @@ public static class ConfigValidator
         => value < 0.001 || value > 1.0 ? "Decay lambda must be between 0.001 and 1.0." : null;
 
     public static string? ValidateLocalEndpoint(string? value)
-        => string.IsNullOrWhiteSpace(value) || !Uri.TryCreate(value, UriKind.Absolute, out var uri) || (uri.Scheme != "http" && uri.Scheme != "https")
+        => string.IsNullOrWhiteSpace(value) ? null
+            : !Uri.TryCreate(value, UriKind.Absolute, out var uri) || (uri.Scheme != "http" && uri.Scheme != "https")
             ? "Endpoint must be a valid HTTP or HTTPS URL." : null;
 
     public static string? ValidateSummarizationInterval(int value)
