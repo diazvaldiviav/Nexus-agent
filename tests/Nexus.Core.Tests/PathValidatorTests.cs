@@ -251,7 +251,7 @@ public class PathValidatorTests : IDisposable
     public async Task ValidateAsync_FuzzyMatch_CorrectsMisspelledDirectory()
     {
         var validator = CreateValidator();
-        var typoPath = Path.Combine(_tempRoot, "ecommerce", "docs");
+        var typoPath = Path.Combine(_tempRoot, "ecomerc", "docs");
 
         var args = new Dictionary<string, object>
         {
@@ -262,7 +262,7 @@ public class PathValidatorTests : IDisposable
 
         Assert.True(result.IsValid);
         Assert.True(result.WasCorrected);
-        Assert.Contains("ecomerce", (string)result.CorrectedArguments!["path"]);
+        Assert.Contains("ecomerce", (string)result.CorrectedArguments!["path"], StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

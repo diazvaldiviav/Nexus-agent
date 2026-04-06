@@ -372,7 +372,7 @@ public sealed class PathValidator : IToolArgumentValidator
 
     private static void ScanRecursive(string dir, List<CatalogEntry> result, int depth, int maxDepth)
     {
-        if (depth > maxDepth) return;
+        if (depth >= maxDepth) return;
         try
         {
             foreach (var file in Directory.GetFiles(dir))
@@ -381,11 +381,10 @@ public sealed class PathValidator : IToolArgumentValidator
                 result.Add(new CatalogEntry(file, fileName, false));
             }
 
-            if (depth == maxDepth) return;
-
             foreach (var sub in Directory.GetDirectories(dir))
             {
                 var name = Path.GetFileName(sub);
+                if (name.StartsWith('.')) continue;
                 if (SkipDirectories.Contains(name)) continue;
 
                 result.Add(new CatalogEntry(sub, name, true));
