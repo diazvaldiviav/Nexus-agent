@@ -20,8 +20,8 @@ public sealed class PathValidator : IToolArgumentValidator
     private readonly int _fuzzyThreshold;
     private readonly TimeSpan _cacheTtl;
 
-    // Key: allowed root dir → (expiry UTC, flat list of known sub-dirs)
-    private readonly ConcurrentDictionary<string, (DateTime Expiry, List<string> Dirs)> _dirCache = new();
+    // Key: allowed root dir → (expiry UTC, catalog entries under that root)
+    private readonly ConcurrentDictionary<string, (DateTime Expiry, List<CatalogEntry> Entries)> _catalogCache = new();
 
     private static readonly HashSet<string> PathKeywords = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -156,6 +156,8 @@ public sealed class PathValidator : IToolArgumentValidator
         bool WasCorrected,
         string? ErrorMessage);
 
+    internal record CatalogEntry(string FullPath, string Name, bool IsDirectory);
+
     private static readonly HashSet<string> WriteTools = new(StringComparer.OrdinalIgnoreCase)
     {
         "write_file", "create_directory", "move_file", "copy_file"
@@ -167,64 +169,37 @@ public sealed class PathValidator : IToolArgumentValidator
         // 1. Normalize
         var normalized = NormalizePath(rawPath);
 
-        // 2. Allowed-directory guard
-        if (!IsWithinAllowedDirectory(normalized))
-        {
-            var repaired = TryRepairRoot(normalized);
-            if (repaired is null)
-            {
-                return new PathCheckResult(false, null, false,
-                    $"Path '{rawPath}' is outside allowed directories. " +
-                    $"Allowed: {string.Join(", ", _allowedDirectories)}. " +
-                    $"Use paths within these directories.");
-            }
-            normalized = repaired;
-        }
-
-        // 3. Existence check — if it exists, we're done
-        if (File.Exists(normalized) || Directory.Exists(normalized))
+        // 2. Fast path: exact existing path inside allowed roots
+        if (IsWithinAllowedDirectory(normalized) &&
+            (File.Exists(normalized) || Directory.Exists(normalized)))
             return new PathCheckResult(true, normalized, normalized != rawPath, null);
 
-        // ── Destination path: no fuzzy match, no recursive search ──
-        // The user says WHERE to put something — just validate the parent exists
-        if (isDestination)
-        {
-            var parent = Path.GetDirectoryName(normalized);
-            if (!string.IsNullOrEmpty(parent) && Directory.Exists(parent))
-                return new PathCheckResult(true, normalized, normalized != rawPath, null);
+        // 3. Build real filesystem catalog (dirs + files)
+        var catalog = await GetCatalogAsync(ct);
 
-            return new PathCheckResult(false, null, false,
-                $"Destination path '{rawPath}' — parent directory does not exist. " +
-                $"Available directories: {string.Join(", ", _allowedDirectories)}");
+        // 4. Find best match in catalog
+        var match = FindBestMatch(normalized, catalog);
+        if (match is not null)
+            return new PathCheckResult(true, match, true, null);
+
+        // 5. For destination/write tools allow non-existing leaf if parent can be matched
+        if (isDestination || WriteTools.Contains(toolName))
+        {
+            var parentMatch = FindBestMatchForParent(normalized, catalog);
+            if (parentMatch is not null)
+            {
+                var fileName = Path.GetFileName(normalized);
+                if (!string.IsNullOrEmpty(fileName))
+                {
+                    var newPath = Path.Combine(parentMatch, fileName);
+                    return new PathCheckResult(true, newPath, true, null);
+                }
+            }
         }
 
-        // ── Source path: fuzzy match + recursive search ──
-
-        // 4. Fuzzy match — only accept if the result actually exists
-        var fuzzyResult = await TryFuzzyMatchAsync(normalized, ct);
-        if (fuzzyResult is not null && (File.Exists(fuzzyResult) || Directory.Exists(fuzzyResult)))
-            return new PathCheckResult(true, fuzzyResult, true, null);
-
-        // 5. Recursive file search — find by filename anywhere in allowed dirs
-        var fileName = Path.GetFileName(normalized);
-        if (!string.IsNullOrEmpty(fileName))
-        {
-            var found = TryFindFileRecursive(fileName);
-            if (found is not null)
-                return new PathCheckResult(true, found, true, null);
-        }
-
-        // 6. Write operations: allow new path if parent directory exists
-        if (WriteTools.Contains(toolName))
-        {
-            var parent = Path.GetDirectoryName(normalized);
-            if (!string.IsNullOrEmpty(parent) && Directory.Exists(parent))
-                return new PathCheckResult(true, normalized, normalized != rawPath, null);
-        }
-
+        // 6. Reject with suggestions
         return new PathCheckResult(false, null, false,
-            $"Path '{rawPath}' does not exist and no close match found. " +
-            $"Available directories: {string.Join(", ", _allowedDirectories)}");
+            $"Path '{rawPath}' not found. Did you mean:\n{GetSuggestions(normalized, catalog)}");
     }
 
     // ── Path normalization ────────────────────────────────────────
@@ -257,186 +232,167 @@ public sealed class PathValidator : IToolArgumentValidator
         return false;
     }
 
-    // ── Root repair ───────────────────────────────────────────────
-    // e.g. D:\Nova Tech\Nexus\scrum.md → D:\Nova Tech\Nexus\Nexus-agent\scrum.md
+    // ── Catalog-based matching ────────────────────────────────────
 
-    internal string? TryRepairRoot(string path)
+    internal string? FindBestMatch(string proposedPath, List<CatalogEntry> catalog)
     {
-        foreach (var allowed in _allowedDirectories)
-        {
-            var normalizedAllowed = NormalizePath(allowed);
-            var relative = StripCommonRoot(path, normalizedAllowed);
-            if (relative is null) continue;
-
-            var candidate = Path.Combine(normalizedAllowed, relative);
-            try { candidate = Path.GetFullPath(candidate); } catch { continue; }
-
-            if (IsWithinAllowedDirectory(candidate))
-                return candidate;
-        }
-        return null;
-    }
-
-    /// <summary>
-    /// Given "D:\Nova Tech\Nexus\file.md" and allowed "D:\Nova Tech\Nexus\Nexus-agent",
-    /// finds the common prefix ("D:\Nova Tech\Nexus") and returns the remainder ("file.md").
-    /// </summary>
-    internal static string? StripCommonRoot(string path, string allowedRoot)
-    {
-        var pathParts = path.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
-        var allowedParts = allowedRoot.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
-
-        int common = 0;
-        for (int i = 0; i < Math.Min(pathParts.Length, allowedParts.Length); i++)
-        {
-            if (string.Equals(pathParts[i], allowedParts[i], StringComparison.OrdinalIgnoreCase))
-                common++;
-            else break;
-        }
-
-        if (common == 0) return null;
-
-        var remaining = pathParts.Skip(common).ToArray();
-        return remaining.Length > 0
-            ? string.Join(Path.DirectorySeparatorChar.ToString(), remaining)
-            : null;
-    }
-
-    // ── Fuzzy directory matching ──────────────────────────────────
-
-    private async Task<string?> TryFuzzyMatchAsync(string path, CancellationToken ct)
-    {
-        var dirPart = Path.GetDirectoryName(path);
-        var filePart = Path.GetFileName(path);
-
-        if (string.IsNullOrEmpty(dirPart))
+        if (catalog.Count == 0)
             return null;
 
-        var knownDirs = await GetKnownDirectoriesAsync(ct);
-        if (knownDirs.Count == 0)
+        var proposedName = Path.GetFileName(proposedPath);
+        if (string.IsNullOrWhiteSpace(proposedName))
             return null;
 
-        string? bestDir = null;
-        int bestScore = 0;
+        var exactMatches = catalog
+            .Where(e => string.Equals(e.Name, proposedName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
 
-        foreach (var known in knownDirs)
+        if (exactMatches.Count > 0)
+            return SelectBestByFullPath(proposedPath, exactMatches)?.FullPath;
+
+        var fuzzyMatches = new List<CatalogEntry>();
+        foreach (var entry in catalog)
         {
             var score = Fuzz.Ratio(
-                dirPart.ToLowerInvariant(),
-                known.ToLowerInvariant());
+                proposedName.ToLowerInvariant(),
+                entry.Name.ToLowerInvariant());
+            if (score >= _fuzzyThreshold)
+                fuzzyMatches.Add(entry);
+        }
 
-            if (score > bestScore && score >= _fuzzyThreshold)
+        if (fuzzyMatches.Count == 0)
+            return null;
+
+        return SelectBestByFullPath(proposedPath, fuzzyMatches)?.FullPath;
+    }
+
+    internal string? FindBestMatchForParent(string proposedPath, List<CatalogEntry> catalog)
+    {
+        var parent = Path.GetDirectoryName(proposedPath);
+        if (string.IsNullOrWhiteSpace(parent))
+            return null;
+
+        var dirCatalog = catalog.Where(c => c.IsDirectory).ToList();
+        return FindBestMatch(parent, dirCatalog);
+    }
+
+    private CatalogEntry? SelectBestByFullPath(string proposedPath, List<CatalogEntry> matches)
+    {
+        if (matches.Count == 0)
+            return null;
+        if (matches.Count == 1)
+            return matches[0];
+
+        CatalogEntry? best = null;
+        var bestScore = int.MinValue;
+        foreach (var match in matches)
+        {
+            var score = Fuzz.Ratio(
+                proposedPath.ToLowerInvariant(),
+                match.FullPath.ToLowerInvariant());
+            if (score > bestScore)
             {
                 bestScore = score;
-                bestDir = known;
+                best = match;
             }
         }
 
-        if (bestDir is null)
-            return null;
-
-        var candidate = string.IsNullOrEmpty(filePart)
-            ? bestDir
-            : Path.Combine(bestDir, filePart);
-
-        _logger?.LogDebug(
-            "[PathValidator] Fuzzy: '{Original}' → '{Corrected}' (score {Score})",
-            dirPart, bestDir, bestScore);
-
-        return candidate;
+        return best;
     }
 
-    // ── Directory cache ───────────────────────────────────────────
-
-    private async Task<List<string>> GetKnownDirectoriesAsync(CancellationToken ct)
+    internal string GetSuggestions(string proposedPath, List<CatalogEntry> catalog)
     {
-        var all = new List<string>();
+        if (catalog.Count == 0)
+            return "  - no indexed paths available";
+
+        var suggestions = catalog
+            .Select(e => new
+            {
+                Entry = e,
+                Score = Fuzz.Ratio(
+                    proposedPath.ToLowerInvariant(),
+                    e.FullPath.ToLowerInvariant())
+            })
+            .OrderByDescending(x => x.Score)
+            .ThenBy(x => x.Entry.FullPath, StringComparer.OrdinalIgnoreCase)
+            .Take(3)
+            .ToList();
+
+        if (suggestions.Count == 0)
+            return "  - no close paths found";
+
+        return string.Join("\n", suggestions.Select(s =>
+            $"  - {s.Entry.FullPath} (score: {s.Score})"));
+    }
+
+    // ── Catalog cache ─────────────────────────────────────────────
+
+    private async Task<List<CatalogEntry>> GetCatalogAsync(CancellationToken ct)
+    {
+        var all = new List<CatalogEntry>();
 
         foreach (var root in _allowedDirectories)
         {
             var normalizedRoot = NormalizePath(root);
             var now = DateTime.UtcNow;
 
-            if (_dirCache.TryGetValue(normalizedRoot, out var cached) && cached.Expiry > now)
+            if (_catalogCache.TryGetValue(normalizedRoot, out var cached) && cached.Expiry > now)
             {
-                all.AddRange(cached.Dirs);
+                all.AddRange(cached.Entries);
                 continue;
             }
 
-            var dirs = await Task.Run(() => ScanDirectoriesRecursive(normalizedRoot), ct);
-            _dirCache[normalizedRoot] = (now.Add(_cacheTtl), dirs);
-            all.AddRange(dirs);
+            var entries = await Task.Run(() => ScanCatalogRecursive(normalizedRoot), ct);
+            _catalogCache[normalizedRoot] = (now.Add(_cacheTtl), entries);
+            all.AddRange(entries);
         }
 
         return all;
     }
 
-    private static List<string> ScanDirectoriesRecursive(string root)
+    private static readonly HashSet<string> SkipDirectories = new(StringComparer.OrdinalIgnoreCase)
     {
-        var result = new List<string> { root };
-        try { ScanRecursive(root, result, 0, 5); }
+        ".git", ".vs", "node_modules", "bin", "obj"
+    };
+
+    private static List<CatalogEntry> ScanCatalogRecursive(string root)
+    {
+        var result = new List<CatalogEntry>();
+        try
+        {
+            if (!Directory.Exists(root))
+                return result;
+
+            result.Add(new CatalogEntry(root, Path.GetFileName(root), true));
+            ScanRecursive(root, result, 0, 5);
+        }
         catch { /* permission errors — return what we have */ }
         return result;
     }
 
-    private static void ScanRecursive(string dir, List<string> result, int depth, int maxDepth)
+    private static void ScanRecursive(string dir, List<CatalogEntry> result, int depth, int maxDepth)
     {
-        if (depth >= maxDepth) return;
+        if (depth > maxDepth) return;
         try
         {
+            foreach (var file in Directory.GetFiles(dir))
+            {
+                var fileName = Path.GetFileName(file);
+                result.Add(new CatalogEntry(file, fileName, false));
+            }
+
+            if (depth == maxDepth) return;
+
             foreach (var sub in Directory.GetDirectories(dir))
             {
-                // Skip hidden dirs (.git, .vs, etc.)
                 var name = Path.GetFileName(sub);
-                if (name.StartsWith('.')) continue;
+                if (SkipDirectories.Contains(name)) continue;
 
-                result.Add(sub);
+                result.Add(new CatalogEntry(sub, name, true));
                 ScanRecursive(sub, result, depth + 1, maxDepth);
             }
         }
         catch { /* skip inaccessible */ }
-    }
-
-    // ── Recursive file search ─────────────────────────────────────
-
-    internal string? TryFindFileRecursive(string fileName)
-    {
-        foreach (var root in _allowedDirectories)
-        {
-            var normalizedRoot = NormalizePath(root);
-            var found = SearchFileRecursive(normalizedRoot, fileName, 0, 5);
-            if (found is not null)
-            {
-                _logger?.LogDebug(
-                    "[PathValidator] File search: '{FileName}' found at '{Path}'",
-                    fileName, found);
-                return found;
-            }
-        }
-        return null;
-    }
-
-    private static string? SearchFileRecursive(string dir, string fileName, int depth, int maxDepth)
-    {
-        if (depth >= maxDepth) return null;
-        try
-        {
-            var filePath = Path.Combine(dir, fileName);
-            if (File.Exists(filePath))
-                return filePath;
-
-            foreach (var sub in Directory.GetDirectories(dir))
-            {
-                var name = Path.GetFileName(sub);
-                if (name.StartsWith('.')) continue;
-
-                var found = SearchFileRecursive(sub, fileName, depth + 1, maxDepth);
-                if (found is not null)
-                    return found;
-            }
-        }
-        catch { /* skip inaccessible */ }
-        return null;
     }
 
     // ── Allowed directory extraction ──────────────────────────────

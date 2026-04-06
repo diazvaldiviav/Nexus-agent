@@ -1,20 +1,23 @@
 using Nexus.Connectors;
 using Nexus.Core.Config;
+using System.Reflection;
 
 namespace Nexus.Core.Tests;
 
 public class PathValidatorTests : IDisposable
 {
     private readonly string _tempRoot;
-    private readonly string _tempSubDir;
+    private readonly string _tempDocsDir;
+    private readonly string _tempModelDir;
     private readonly string _tempFile;
 
     public PathValidatorTests()
     {
         // Create a temp directory structure for testing
         _tempRoot = Path.Combine(Path.GetTempPath(), "nexus_test_" + Guid.NewGuid().ToString("N")[..8]);
-        _tempSubDir = Path.Combine(_tempRoot, "ecommerce", "docs");
-        Directory.CreateDirectory(_tempSubDir);
+        _tempDocsDir = Path.Combine(_tempRoot, "ecomerce", "docs");
+        _tempModelDir = Path.Combine(_tempDocsDir, "model");
+        Directory.CreateDirectory(_tempModelDir);
         _tempFile = Path.Combine(_tempRoot, "scrum_plan.md");
         File.WriteAllText(_tempFile, "test");
     }
@@ -47,6 +50,14 @@ public class PathValidatorTests : IDisposable
 
         var registry = new ToolRegistry();
         return new PathValidator(config, registry, cacheTtl: TimeSpan.FromMilliseconds(100));
+    }
+
+    private static async Task<List<PathValidator.CatalogEntry>> GetCatalogViaReflectionAsync(PathValidator validator)
+    {
+        var method = typeof(PathValidator).GetMethod("GetCatalogAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        var task = (Task<List<PathValidator.CatalogEntry>>)method!.Invoke(validator, new object[] { CancellationToken.None })!;
+        return await task;
     }
 
     // --- ExtractAllowedDirectories ---
@@ -102,28 +113,6 @@ public class PathValidatorTests : IDisposable
         Assert.False(result.StartsWith(" "));
     }
 
-    // --- StripCommonRoot ---
-
-    [Fact]
-    public void StripCommonRoot_ExtractsRelativePart()
-    {
-        var result = PathValidator.StripCommonRoot(
-            @"D:\Nova Tech\Nexus\scrum.md",
-            @"D:\Nova Tech\Nexus\Nexus-agent");
-
-        Assert.Equal("scrum.md", result);
-    }
-
-    [Fact]
-    public void StripCommonRoot_DifferentDrive_ReturnsNull()
-    {
-        var result = PathValidator.StripCommonRoot(
-            @"C:\Other\file.txt",
-            @"D:\Nova Tech\Nexus\Nexus-agent");
-
-        Assert.Null(result);
-    }
-
     // --- ValidateAsync ---
 
     [Fact]
@@ -167,12 +156,10 @@ public class PathValidatorTests : IDisposable
     }
 
     [Fact]
-    public async Task ValidateAsync_PathOutsideAllowed_RepairsRoot()
+    public async Task ValidateAsync_PathOutsideAllowed_UsesCatalogCorrection()
     {
         var validator = CreateValidator();
-        // Simulate: model uses parent of allowed dir + filename
-        var parentDir = Path.GetDirectoryName(_tempRoot)!;
-        var wrongPath = Path.Combine(parentDir, "scrum_plan.md");
+        var wrongPath = @"Z:\totally\wrong\location\scrum_plan.md";
 
         var args = new Dictionary<string, object>
         {
@@ -181,17 +168,16 @@ public class PathValidatorTests : IDisposable
 
         var result = await validator.ValidateAsync("read_file", args);
 
-        // Should repair root and find the file inside _tempRoot
         Assert.True(result.IsValid);
         Assert.True(result.WasCorrected);
-        Assert.Contains("scrum_plan.md", (string)result.CorrectedArguments!["path"]);
+        Assert.Equal(_tempFile, (string)result.CorrectedArguments!["path"]);
     }
 
     [Fact]
     public async Task ValidateAsync_WriteFile_ParentExists_AllowsNewFile()
     {
         var validator = CreateValidator();
-        var newFile = Path.Combine(_tempSubDir, "new_file.txt");
+        var newFile = Path.Combine(_tempDocsDir, "new_file.txt");
 
         var args = new Dictionary<string, object>
         {
@@ -209,7 +195,7 @@ public class PathValidatorTests : IDisposable
     public async Task ValidateAsync_MoveFile_ValidatesBothPaths()
     {
         var validator = CreateValidator();
-        var destPath = Path.Combine(_tempSubDir, "moved.md");
+        var destPath = Path.Combine(_tempDocsDir, "moved.md");
 
         var args = new Dictionary<string, object>
         {
@@ -229,7 +215,7 @@ public class PathValidatorTests : IDisposable
         var args = new Dictionary<string, object>
         {
             ["source"] = _tempFile,          // .../scrum_plan.md
-            ["destination"] = _tempSubDir    // .../ecommerce/docs  (directory)
+            ["destination"] = _tempDocsDir    // .../ecomerce/docs  (directory)
         };
 
         var result = await validator.ValidateAsync("move_file", args);
@@ -238,7 +224,7 @@ public class PathValidatorTests : IDisposable
         Assert.True(result.WasCorrected);
         var destResult = (string)result.CorrectedArguments!["destination"];
         Assert.EndsWith("scrum_plan.md", destResult);
-        Assert.Contains("ecommerce", destResult);
+        Assert.Contains("ecomerce", destResult);
         Assert.Contains("docs", destResult);
     }
 
@@ -254,15 +240,14 @@ public class PathValidatorTests : IDisposable
         var result = await validator.ValidateAsync("read_file", args);
 
         Assert.False(result.IsValid);
-        Assert.Contains("outside allowed directories", result.ErrorMessage);
+        Assert.Contains("not found", result.ErrorMessage);
     }
 
     [Fact]
     public async Task ValidateAsync_FuzzyMatch_CorrectsMisspelledDirectory()
     {
         var validator = CreateValidator();
-        // "ecomerce" (typo) should fuzzy-match "ecommerce"
-        var typoPath = Path.Combine(_tempRoot, "ecomerce", "docs");
+        var typoPath = Path.Combine(_tempRoot, "ecommerce", "docs");
 
         var args = new Dictionary<string, object>
         {
@@ -271,18 +256,16 @@ public class PathValidatorTests : IDisposable
 
         var result = await validator.ValidateAsync("list_directory", args);
 
-        // Should fuzzy-match to the correct "ecommerce/docs" directory
         Assert.True(result.IsValid);
         Assert.True(result.WasCorrected);
-        Assert.Contains("ecommerce", (string)result.CorrectedArguments!["path"]);
+        Assert.Contains("ecomerce", (string)result.CorrectedArguments!["path"]);
     }
 
     [Fact]
     public async Task ValidateAsync_FileInSubdirectory_FoundByRecursiveSearch()
     {
         var validator = CreateValidator();
-        // File is at _tempRoot/ecommerce/docs/ but model says it's at _tempRoot/
-        var fileInSubdir = Path.Combine(_tempSubDir, "nested_file.txt");
+        var fileInSubdir = Path.Combine(_tempDocsDir, "nested_file.txt");
         File.WriteAllText(fileInSubdir, "test");
 
         var wrongPath = Path.Combine(_tempRoot, "nested_file.txt");
@@ -297,7 +280,7 @@ public class PathValidatorTests : IDisposable
         Assert.True(result.IsValid);
         Assert.True(result.WasCorrected);
         Assert.Contains("nested_file.txt", (string)result.CorrectedArguments!["path"]);
-        Assert.Contains("ecommerce", (string)result.CorrectedArguments!["path"]);
+        Assert.Contains("ecomerce", (string)result.CorrectedArguments!["path"]);
     }
 
     [Fact]
@@ -313,28 +296,6 @@ public class PathValidatorTests : IDisposable
 
         Assert.False(result.IsValid);
         Assert.Contains("does not exist", result.ErrorMessage);
-    }
-
-    [Fact]
-    public void TryFindFileRecursive_FindsFileInNestedDirectory()
-    {
-        var validator = CreateValidator();
-        var nestedFile = Path.Combine(_tempSubDir, "deep_file.md");
-        File.WriteAllText(nestedFile, "test");
-
-        var found = validator.TryFindFileRecursive("deep_file.md");
-
-        Assert.NotNull(found);
-        Assert.Contains("deep_file.md", found);
-        Assert.Contains("ecommerce", found);
-    }
-
-    [Fact]
-    public void TryFindFileRecursive_FileNotExists_ReturnsNull()
-    {
-        var validator = CreateValidator();
-        var found = validator.TryFindFileRecursive("totally_missing_file.xyz");
-        Assert.Null(found);
     }
 
     // --- NormalizePath: trailing slash ---
@@ -406,7 +367,7 @@ public class PathValidatorTests : IDisposable
         var args = new Dictionary<string, object>
         {
             ["source"] = _tempFile,
-            ["destination"] = _tempSubDir + "/" // trailing slash
+            ["destination"] = _tempDocsDir + "/" // trailing slash
         };
 
         var result = await validator.ValidateAsync("move_file", args);
@@ -424,7 +385,7 @@ public class PathValidatorTests : IDisposable
     {
         var validator = CreateValidator();
         // nested_file.txt exists in ecommerce/docs/ but destination should NOT find it there
-        var nestedFile = Path.Combine(_tempSubDir, "nested_file.txt");
+        var nestedFile = Path.Combine(_tempDocsDir, "nested_file.txt");
         File.WriteAllText(nestedFile, "data");
 
         var destPath = Path.Combine(_tempRoot, "nested_file.txt"); // doesn't exist at root
@@ -440,7 +401,7 @@ public class PathValidatorTests : IDisposable
         Assert.True(result.IsValid);
         var destResult = (string)result.CorrectedArguments!["destination"];
         // Should stay at root, NOT redirect to ecommerce/docs/nested_file.txt
-        Assert.DoesNotContain("ecommerce", destResult);
+        Assert.DoesNotContain($"{Path.DirectorySeparatorChar}ecomerce{Path.DirectorySeparatorChar}docs{Path.DirectorySeparatorChar}nested_file.txt", destResult, StringComparison.OrdinalIgnoreCase);
     }
 
     // --- Source: recursive search finds file in wrong level ---
@@ -449,7 +410,7 @@ public class PathValidatorTests : IDisposable
     public async Task ValidateAsync_Source_FileInDeepSubdir_Found()
     {
         var validator = CreateValidator();
-        var deepFile = Path.Combine(_tempSubDir, "report.md");
+        var deepFile = Path.Combine(_tempDocsDir, "report.md");
         File.WriteAllText(deepFile, "data");
 
         // Model says file is at root, but it's in ecommerce/docs/
@@ -463,7 +424,7 @@ public class PathValidatorTests : IDisposable
 
         Assert.True(result.IsValid);
         Assert.True(result.WasCorrected);
-        Assert.Contains("ecommerce", (string)result.CorrectedArguments!["path"]);
+        Assert.Contains("ecomerce", (string)result.CorrectedArguments!["path"]);
         Assert.Contains("report.md", (string)result.CorrectedArguments!["path"]);
     }
 
@@ -494,7 +455,7 @@ public class PathValidatorTests : IDisposable
     {
         var validator = CreateValidator();
         // Move existing dir "ecommerce" to new location "shop"
-        var sourceDir = Path.Combine(_tempRoot, "ecommerce");
+        var sourceDir = Path.Combine(_tempRoot, "ecomerce");
         var destDir = Path.Combine(_tempRoot, "shop");
 
         var args = new Dictionary<string, object>
@@ -508,29 +469,116 @@ public class PathValidatorTests : IDisposable
         Assert.True(result.IsValid);
         var destResult = (string)result.CorrectedArguments!["destination"];
         Assert.Contains("shop", destResult);
-        Assert.DoesNotContain("ecommerce", destResult); // Destination must NOT be fuzzy-matched back
+        Assert.DoesNotContain("ecomerce", destResult); // Destination must NOT be fuzzy-matched back
     }
 
-    // --- StripCommonRoot edge cases ---
+    // --- New internal matching flow ---
 
     [Fact]
-    public void StripCommonRoot_SamePath_ReturnsNull()
+    public void FindBestMatch_ExactName_FindsInSubdirectory()
     {
-        var result = PathValidator.StripCommonRoot(
-            @"D:\Nova Tech\Nexus\Nexus-agent",
-            @"D:\Nova Tech\Nexus\Nexus-agent");
+        var validator = CreateValidator();
+        var catalog = new List<PathValidator.CatalogEntry>
+        {
+            new(Path.Combine(_tempRoot, "ecomerce", "docs", "model"), "model", true)
+        };
 
-        Assert.Null(result); // No remaining segments
+        var result = validator.FindBestMatch(Path.Combine(_tempRoot, "ecommerce", "model"), catalog);
+
+        Assert.NotNull(result);
+        Assert.Contains(Path.Combine("ecomerce", "docs", "model"), result, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void StripCommonRoot_DeepRelative_ReturnsAllRemaining()
+    public void FindBestMatch_FuzzyName_CorrectTypo()
     {
-        var result = PathValidator.StripCommonRoot(
-            @"D:\Nova Tech\Nexus\ecomerce\docs\file.md",
-            @"D:\Nova Tech\Nexus\Nexus-agent");
+        var validator = CreateValidator();
+        var catalog = new List<PathValidator.CatalogEntry>
+        {
+            new(Path.Combine(_tempRoot, "ecomerce", "docs", "model"), "model", true)
+        };
 
-        Assert.Equal(@"ecomerce\docs\file.md", result);
+        var result = validator.FindBestMatch(Path.Combine(_tempRoot, "ecomerce", "docs", "models"), catalog);
+
+        Assert.NotNull(result);
+        Assert.EndsWith(Path.Combine("ecomerce", "docs", "model"), result);
+    }
+
+    [Fact]
+    public void FindBestMatch_MultipleMatches_UsesFullPathToDisambiguate()
+    {
+        var validator = CreateValidator();
+        var near = Path.Combine(_tempRoot, "ecomerce", "docs", "config");
+        var far = Path.Combine(_tempRoot, "archive", "legacy", "config");
+        var catalog = new List<PathValidator.CatalogEntry>
+        {
+            new(near, "config", true),
+            new(far, "config", true),
+        };
+
+        var result = validator.FindBestMatch(Path.Combine(_tempRoot, "ecommerce", "docs", "config"), catalog);
+
+        Assert.Equal(near, result);
+    }
+
+    [Fact]
+    public void FindBestMatch_NoMatch_ReturnsNull()
+    {
+        var validator = CreateValidator();
+        var catalog = new List<PathValidator.CatalogEntry>
+        {
+            new(Path.Combine(_tempRoot, "ecomerce", "docs", "model"), "model", true)
+        };
+
+        var result = validator.FindBestMatch(Path.Combine(_tempRoot, "xyznonexistent"), catalog);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void FindBestMatchForParent_FindsParentDir()
+    {
+        var validator = CreateValidator();
+        var catalog = new List<PathValidator.CatalogEntry>
+        {
+            new(Path.Combine(_tempRoot, "ecomerce", "docs"), "docs", true),
+            new(Path.Combine(_tempRoot, "ecomerce"), "ecomerce", true),
+        };
+
+        var parent = validator.FindBestMatchForParent(Path.Combine(_tempRoot, "ecommerce", "new.txt"), catalog);
+
+        Assert.NotNull(parent);
+        var newPath = Path.Combine(parent!, "new.txt");
+        Assert.EndsWith(Path.Combine("ecomerce", "new.txt"), newPath);
+    }
+
+    [Fact]
+    public async Task GetCatalog_IncludesFilesAndDirs()
+    {
+        var validator = CreateValidator();
+        var nestedFile = Path.Combine(_tempDocsDir, "catalog_file.txt");
+        File.WriteAllText(nestedFile, "data");
+
+        var catalog = await GetCatalogViaReflectionAsync(validator);
+
+        Assert.Contains(catalog, e => e.IsDirectory && e.FullPath.EndsWith(Path.Combine("ecomerce", "docs"), StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(catalog, e => !e.IsDirectory && e.FullPath.EndsWith(Path.Combine("ecomerce", "docs", "catalog_file.txt"), StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task ValidateAsync_SkippedLevel_FindsCorrectPath()
+    {
+        var validator = CreateValidator();
+        var args = new Dictionary<string, object>
+        {
+            ["path"] = Path.Combine(_tempRoot, "ecommerce", "model")
+        };
+
+        var result = await validator.ValidateAsync("list_directory", args);
+
+        Assert.True(result.IsValid);
+        Assert.True(result.WasCorrected);
+        Assert.EndsWith(Path.Combine("ecomerce", "docs", "model"), (string)result.CorrectedArguments!["path"], StringComparison.OrdinalIgnoreCase);
     }
 
     // --- IdentifyPathParameters ---
