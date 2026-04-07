@@ -331,9 +331,10 @@ public class PathValidatorTests : IDisposable
     // --- Destination: no fuzzy match (falso positivo bug) ---
 
     [Fact]
-    public async Task ValidateAsync_Destination_NewPath_CorrectsUsingCatalog()
+    public async Task ValidateAsync_Destination_NoFuzzyLeaf_PreservesNewName()
     {
         var validator = CreateValidator();
+        // "models" is a NEW name — must NOT fuzzy-match to existing "model" directory
         var newDir = Path.Combine(_tempRoot, "models");
 
         var args = new Dictionary<string, object>
@@ -346,7 +347,8 @@ public class PathValidatorTests : IDisposable
 
         Assert.True(result.IsValid);
         var destResult = (string)result.CorrectedArguments!["destination"];
-        Assert.StartsWith(_tempRoot, destResult, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("models", destResult);          // leaf name preserved
+        Assert.DoesNotContain("docs", destResult);       // NOT redirected to existing model dir
     }
 
     [Fact]

@@ -88,6 +88,8 @@ public class ModelProviderConfig
     public string Model { get; set; } = "qwen3:14b";
     public string? Endpoint { get; set; }
     public string? ApiKey { get; set; }
+    public int ContextWindow { get; set; } = 8192;
+    public int MaxOutputTokens { get; set; } = 2048;
 }
 
 public class RoutingConfig
@@ -126,6 +128,8 @@ public class MemoryConfig
     public double DeduplicationThreshold { get; set; } = 0.85;
     public string ArchivePath { get; set; } = "~/.nexus/archive/";
     public bool CompressionEnabled { get; set; } = true;
+    public double ContextCompactionThreshold { get; set; } = 0.70;
+    public int CompactionKeepRecentMessages { get; set; } = 4;
 }
 
 public class McpConfig

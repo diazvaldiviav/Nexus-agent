@@ -71,6 +71,7 @@ public class PromptBuilder
             builder.AppendLine("4. ALWAYS use absolute paths (e.g. D:\\Nexus\\file.txt), NEVER relative paths (e.g. file.txt or ./file.txt).");
             builder.AppendLine("5. Use ONLY the exact parameter names listed in the tool definitions above. Do NOT invent parameter names.");
             builder.AppendLine("6. Before using file tools for the first time, call list_allowed_directories to know your working paths. ONLY use paths within those directories.");
+            builder.AppendLine("7. BEFORE creating, moving, copying, or writing files, ALWAYS call list_directory or directory_tree first to see the real folder structure. NEVER guess paths — verify them.");
         }
         else
         {

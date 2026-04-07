@@ -182,6 +182,12 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<LlmProviderFactory>();
 
+        services.AddSingleton(sp => new ContextWindowManager(
+            sp.GetRequiredService<IInteractionSummarizer>(),
+            sp.GetRequiredService<PromptBuilder>(),
+            config.Memory,
+            sp.GetService<ILogger<ContextWindowManager>>()));
+
         services.AddSingleton(sp => new AgentService(
             config,
             sp.GetRequiredService<IKnowledgeGraph>(),
@@ -194,6 +200,7 @@ public static class ServiceCollectionExtensions
             sp.GetService<IToolArgumentValidator>(),
             sp.GetService<EntityResolver>(),
             sp.GetService<MemoryCompressor>(),
+            sp.GetService<ContextWindowManager>(),
             sp.GetService<ILogger<AgentService>>()));
         services.AddSingleton<IAgentService>(sp => sp.GetRequiredService<AgentService>());
         services.AddSingleton(sp => new RelevanceDecay(

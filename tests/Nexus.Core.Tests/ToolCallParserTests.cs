@@ -380,4 +380,94 @@ public class ToolCallParserTests
         Assert.Equal(@"D:\Nova Tech\scrum.md", result.Arguments!["path"]);
         Assert.Equal("hello", result.Arguments["content"]);
     }
+
+    // --- Raw control characters in JSON strings ---
+
+    [Fact]
+    public void SanitizeInvalidEscapes_RawNewlineInString_EscapedToBackslashN()
+    {
+        var json = "{\"name\": \"write_file\", \"content\": \"line1\nline2\"}";
+        var result = ToolCallParser.SanitizeInvalidEscapes(json);
+        Assert.Contains("line1\\nline2", result);
+        // Must parse as valid JSON now
+        using var doc = System.Text.Json.JsonDocument.Parse(result);
+        Assert.Equal("line1\nline2", doc.RootElement.GetProperty("content").GetString());
+    }
+
+    [Fact]
+    public void SanitizeInvalidEscapes_RawCrLfInString_EscapedCorrectly()
+    {
+        var json = "{\"content\": \"a\r\nb\"}";
+        var result = ToolCallParser.SanitizeInvalidEscapes(json);
+        Assert.Contains("a\\r\\nb", result);
+    }
+
+    [Fact]
+    public void SanitizeInvalidEscapes_RawTabInString_EscapedToBackslashT()
+    {
+        var json = "{\"content\": \"col1\tcol2\"}";
+        var result = ToolCallParser.SanitizeInvalidEscapes(json);
+        Assert.Contains("col1\\tcol2", result);
+    }
+
+    [Fact]
+    public void TryParse_ContentWithRawNewlines_ParsesSuccessfully()
+    {
+        var response = "[TOOL_CALL: {\"name\": \"write_file\", \"arguments\": {\"path\": \"test.cs\", \"content\": \"line1\nline2\nline3\"}}]";
+        var result = ToolCallParser.TryParse(response);
+        Assert.NotNull(result);
+        Assert.Equal("write_file", result.Name);
+        Assert.Equal("line1\nline2\nline3", result.Arguments!["content"]);
+    }
+
+    // --- Repetition loop detection ---
+
+    [Fact]
+    public void HasRepetitionLoop_RepeatingSegment_ReturnsTrue()
+    {
+        // Simulates model hallucinating "\\model\\.." repeated many times
+        var repeated = string.Concat(Enumerable.Repeat(@"\model\..", 20));
+        Assert.True(ToolCallParser.HasRepetitionLoop(repeated));
+    }
+
+    [Fact]
+    public void HasRepetitionLoop_NormalPath_ReturnsFalse()
+    {
+        Assert.False(ToolCallParser.HasRepetitionLoop(@"D:\Nova Tech\Nexus\Nexus-agent\ecomerce\model"));
+    }
+
+    [Fact]
+    public void HasRepetitionLoop_ShortString_ReturnsFalse()
+    {
+        Assert.False(ToolCallParser.HasRepetitionLoop("abc"));
+    }
+
+    [Fact]
+    public void SanitizeRepetitionLoops_ReplacesHallucinatedPath()
+    {
+        var repeated = string.Concat(Enumerable.Repeat(@"\model\..", 20));
+        var args = new Dictionary<string, object>
+        {
+            ["paths"] = repeated,
+            ["name"] = "normal_value"
+        };
+
+        ToolCallParser.SanitizeRepetitionLoops(args);
+
+        Assert.Equal("[REPETITION_ERROR]", args["paths"]);
+        Assert.Equal("normal_value", args["name"]); // untouched
+    }
+
+    [Fact]
+    public void TryParse_RepetitionInArgument_MarksAsError()
+    {
+        var repeated = string.Concat(Enumerable.Repeat(@"\\model\\..", 20));
+        var response = "[TOOL_CALL: {\"name\": \"read_multiple_files\", \"arguments\": {\"paths\": \"" + repeated + "\"}}]";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal("read_multiple_files", result.Name);
+        Assert.Equal("[REPETITION_ERROR]", result.Arguments!["paths"]);
+    }
 }

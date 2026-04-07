@@ -7,9 +7,13 @@ models:
     provider: ollama
     model: qwen3:14b
     endpoint: http://localhost:11434
+    context_window: 32768          # Context window size in tokens (default: 8192)
+    max_output_tokens: 4096        # Max tokens in LLM response (default: 2048)
   cloud:
     provider: gemini              # gemini | anthropic | openai
     model: gemini-2.5-flash-lite
+    context_window: 1048576        # 1M tokens for cloud models
+    max_output_tokens: 8192        # Higher output limit for cloud
     # endpoint:                   # Optional custom endpoint for cloud provider
 
   # Per-provider API keys (preferred over environment variables)
@@ -66,6 +70,8 @@ memory:
   deduplication_threshold: 0.85       # Cosine similarity threshold for entity deduplication (0.0-1.0)
   archive_path: ~/.nexus/archive/    # Directory for archived entity JSON files
   compression_enabled: true          # Enable archival of stale Archive-level entities
+  context_compaction_threshold: 0.70 # Compact conversation when token usage exceeds this ratio (0.0-1.0)
+  compaction_keep_recent_messages: 4 # Number of recent messages to preserve during compaction
 
 mcp:
   max_tool_call_iterations: 3      # Maximum LLM ↔ tool call round-trips per message (default: 3)

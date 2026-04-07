@@ -177,13 +177,35 @@ public sealed class PathValidator : IToolArgumentValidator
         // 3. Build real filesystem catalog (dirs + files)
         var catalog = await GetCatalogAsync(ct);
 
+        // ── Destination paths: the user says WHERE to put something ──
+        // Do NOT fuzzy-match the leaf (avoids "models" → "model" false positive).
+        // Only match the parent directory so the new leaf name is preserved.
+        if (isDestination)
+        {
+            var parentMatch = FindBestMatchForParent(normalized, catalog);
+            if (parentMatch is not null)
+            {
+                var leafName = Path.GetFileName(normalized);
+                if (!string.IsNullOrEmpty(leafName))
+                {
+                    var newPath = Path.Combine(parentMatch, leafName);
+                    return new PathCheckResult(true, newPath, true, null);
+                }
+            }
+
+            return new PathCheckResult(false, null, false,
+                $"Destination path '{rawPath}' — parent directory not found. Did you mean:\n{GetSuggestions(normalized, catalog)}");
+        }
+
+        // ── Source paths: find the actual file/dir in the catalog ──
+
         // 4. Find best match in catalog
         var match = FindBestMatch(normalized, catalog);
         if (match is not null)
             return new PathCheckResult(true, match, true, null);
 
-        // 5. For destination/write tools allow non-existing leaf if parent can be matched
-        if (isDestination || WriteTools.Contains(toolName))
+        // 5. Write tools: allow new path if parent can be matched
+        if (WriteTools.Contains(toolName))
         {
             var parentMatch = FindBestMatchForParent(normalized, catalog);
             if (parentMatch is not null)

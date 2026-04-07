@@ -61,6 +61,10 @@ public static class ToolCallParser
                     arguments[prop.Name] = MapJsonValue(prop.Value);
             }
 
+            // Sanitize repetition loops in arguments (small models hallucinate repeating segments)
+            if (arguments is not null)
+                SanitizeRepetitionLoops(arguments);
+
             return new ToolCallRequest(name, arguments);
         }
         catch (JsonException ex)
@@ -237,7 +241,11 @@ public static class ToolCallParser
                 continue;
             }
 
-            // Inside a string
+            // Inside a string — replace raw control chars with JSON escapes
+            if (c == '\n') { sb.Append("\\n"); continue; }
+            if (c == '\r') { sb.Append("\\r"); continue; }
+            if (c == '\t') { sb.Append("\\t"); continue; }
+
             if (c == '"')
             {
                 inString = false;
@@ -315,5 +323,63 @@ public static class ToolCallParser
         // In a path, it's always a word char (letter, digit). In escaped content like
         // {\"a\"}, the char before \ is { which is not a path char.
         return true; // Let the structural check suffice — revisit if needed
+    }
+
+    /// <summary>
+    /// Detects and truncates repetition loops in string arguments.
+    /// Small models hallucinate repeating segments like "\\model\\..\\model\\..\\model\\.." hundreds of times.
+    /// If a segment of 3+ chars repeats 5+ times consecutively, the value is replaced with an error marker.
+    /// </summary>
+    internal static void SanitizeRepetitionLoops(Dictionary<string, object> arguments)
+    {
+        var keysToFix = new List<string>();
+
+        foreach (var (key, value) in arguments)
+        {
+            if (value is not string str || str.Length < 100)
+                continue;
+
+            if (HasRepetitionLoop(str))
+                keysToFix.Add(key);
+        }
+
+        foreach (var key in keysToFix)
+        {
+            Console.Error.WriteLine($"[ToolCallParser DEBUG] Repetition loop detected in '{key}', value truncated (was {((string)arguments[key]).Length} chars)");
+            arguments[key] = "[REPETITION_ERROR]";
+        }
+    }
+
+    /// <summary>
+    /// Checks if a string contains a repeating segment (min 3 chars) that appears 5+ times consecutively.
+    /// Uses a sliding window: for each candidate segment length, checks if the segment repeats.
+    /// </summary>
+    internal static bool HasRepetitionLoop(string text)
+    {
+        // Check segment lengths from 3 to 50 chars
+        var maxSegLen = Math.Min(50, text.Length / 5);
+        for (var segLen = 3; segLen <= maxSegLen; segLen++)
+        {
+            var segment = text.AsSpan(0, segLen);
+            var consecutiveMatches = 1;
+
+            for (var offset = segLen; offset + segLen <= text.Length; offset += segLen)
+            {
+                if (text.AsSpan(offset, segLen).SequenceEqual(segment))
+                {
+                    consecutiveMatches++;
+                    if (consecutiveMatches >= 5)
+                        return true;
+                }
+                else
+                {
+                    // Try starting from this new offset
+                    segment = text.AsSpan(offset, segLen);
+                    consecutiveMatches = 1;
+                }
+            }
+        }
+
+        return false;
     }
 }
