@@ -128,11 +128,12 @@
                         </ListBox>
                     </Border>
 
-                    <Grid ColumnDefinitions="Auto,Auto,*" ColumnSpacing="8">
+                    <Grid ColumnDefinitions="Auto,Auto,*">
                         <Button Grid.Column="0" Content="Connect Selected"
                                 Command="{Binding ConnectMcpServerCommand}"
                                 CommandParameter="{Binding SelectedMcpServer}"
-                                IsEnabled="{Binding IsNotMcpBusy}" />
+                                IsEnabled="{Binding IsNotMcpBusy}"
+                                Margin="0,0,8,0" />
                         <Button Grid.Column="1" Content="Disconnect Selected"
                                 Command="{Binding DisconnectMcpServerCommand}"
                                 CommandParameter="{Binding SelectedMcpServer}"
