@@ -75,7 +75,7 @@ public partial class SettingsViewModel : ObservableObject
     public SettingsViewModel(NexusConfig config, McpLifecycleService mcpLifecycle)
     {
         _config = config;
-        _mcpLifecycle = mcpLifecycle ?? throw new ArgumentNullException(nameof(mcpLifecycle));
+        _mcpLifecycle = mcpLifecycle;
         McpServers.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasMcpServers));
         LoadFromConfig();
     }

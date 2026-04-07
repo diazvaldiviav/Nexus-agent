@@ -74,7 +74,7 @@ public class McpLifecycleService
                 {
                     ServerName = server.Name,
                     Success = false,
-                    ErrorMessage = "Connection failed."
+                    ErrorMessage = $"Connection failed. Verify '{server.Name}' {server.Transport} settings and command/URL reachability."
                 };
 
                 await TryLogAsync(actionLogger, new McpLifecycleEvent
