@@ -17,7 +17,7 @@ public partial class ActionLogViewModel : ObservableObject, IDisposable
 
     public ObservableCollection<AgentAction> Actions { get; } = new();
     public ObservableCollection<string> ActionTypes { get; } = new(
-        new[] { "All", "chat", "entity_extraction", "summarize", "decay" });
+        new[] { "All", "chat", "entity_extraction", "summarize", "decay", "mcp" });
 
     public bool HasActions => Actions.Count > 0;
 

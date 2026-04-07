@@ -7,12 +7,20 @@ using Nexus.Core.Config;
 
 namespace Nexus.Connectors;
 
+public interface IMcpClientManager
+{
+    Task<bool> ConnectAsync(McpServerEntry serverEntry, CancellationToken ct = default);
+    Task DisconnectAsync(string serverName, CancellationToken ct = default);
+    Task<List<ToolDefinition>> DiscoverToolsAsync(string serverName, CancellationToken ct = default);
+    IReadOnlyDictionary<string, bool> GetServerStatus();
+}
+
 /// <summary>
 /// Manages connections to MCP servers using the official MCP SDK.
 /// Supports stdio transport (primary) and SSE transport (when available).
 /// Never throws from public methods — returns error strings or false.
 /// </summary>
-public class McpClientManager : IAsyncDisposable
+public class McpClientManager : IMcpClientManager, IAsyncDisposable
 {
     private readonly ConcurrentDictionary<string, McpClient> _clients = new();
     private readonly ILogger<McpClientManager>? _logger;

@@ -13,11 +13,15 @@ public static class McpServiceCollectionExtensions
 {
     public static IServiceCollection AddNexusMcp(this IServiceCollection services)
     {
-        services.AddSingleton(sp =>
+        services.AddSingleton<McpClientManager>(sp =>
             new McpClientManager(sp.GetService<ILogger<McpClientManager>>()));
+        services.AddSingleton<IMcpClientManager>(sp => sp.GetRequiredService<McpClientManager>());
 
-        services.AddSingleton(sp =>
+        services.AddSingleton<ToolRegistry>(sp =>
             new ToolRegistry(sp.GetService<ILogger<ToolRegistry>>()));
+        services.AddSingleton<IToolRegistry>(sp => sp.GetRequiredService<ToolRegistry>());
+
+        services.AddSingleton<McpLifecycleService>();
 
         services.AddSingleton<IToolExecutor>(sp =>
             new McpToolExecutor(
