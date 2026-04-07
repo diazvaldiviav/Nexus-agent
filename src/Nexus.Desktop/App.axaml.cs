@@ -55,12 +55,19 @@ public partial class App : Application
 
         _ = Task.Run(async () =>
         {
-            var lifecycle = services.GetRequiredService<McpLifecycleService>();
-            var graph = services.GetService<IKnowledgeGraph>();
-            await lifecycle.ConnectServersAsync(
-                config.Mcp.Servers,
-                actionLogger: graph is null ? null : (evt, ct) => LogMcpActionAsync(graph, evt, ct))
-                .ConfigureAwait(false);
+            try
+            {
+                var lifecycle = services.GetRequiredService<McpLifecycleService>();
+                var graph = services.GetService<IKnowledgeGraph>();
+                await lifecycle.ConnectServersAsync(
+                    config.Mcp.Servers,
+                    actionLogger: graph is null ? null : (evt, ct) => LogMcpActionAsync(graph, evt, ct))
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                // Swallow to keep startup resilient.
+            }
         });
     }
 

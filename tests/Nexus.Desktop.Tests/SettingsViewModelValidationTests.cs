@@ -1,15 +1,20 @@
 using Nexus.Core.Config;
+using Nexus.Connectors;
+using Nexus.Desktop.Tests.Fakes;
 using Nexus.Desktop.ViewModels;
 
 namespace Nexus.Desktop.Tests;
 
 public class SettingsViewModelValidationTests
 {
+    private static McpLifecycleService CreateMcpLifecycleService()
+        => new(new FakeMcpClientManager(), new ToolRegistry());
+
     private static SettingsViewModel CreateVm(NexusConfig? config = null)
     {
         config ??= new NexusConfig();
         config.Models.Local.Endpoint ??= "http://localhost:11434";
-        return new SettingsViewModel(config);
+        return new SettingsViewModel(config, CreateMcpLifecycleService());
     }
 
     [Fact]
@@ -145,7 +150,7 @@ public class SettingsViewModelValidationTests
         config.Models.Local.Endpoint = "http://localhost:11434";
         config.Models.Cloud.Provider = "anthropic";
         config.Models.Anthropic = null;
-        var vm = new SettingsViewModel(config);
+        var vm = new SettingsViewModel(config, CreateMcpLifecycleService());
 
         Assert.NotNull(vm.ApiKeyWarning);
         Assert.Contains("anthropic", vm.ApiKeyWarning);

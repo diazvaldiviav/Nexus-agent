@@ -1,10 +1,15 @@
 using Nexus.Core.Config;
+using Nexus.Connectors;
+using Nexus.Desktop.Tests.Fakes;
 using Nexus.Desktop.ViewModels;
 
 namespace Nexus.Desktop.Tests;
 
 public class SettingsViewModelTests
 {
+    private static McpLifecycleService CreateMcpLifecycleService()
+        => new(new FakeMcpClientManager(), new ToolRegistry());
+
     [Fact]
     public void Constructor_LoadsConfigValues()
     {
@@ -18,7 +23,7 @@ public class SettingsViewModelTests
         config.Memory.RecentInteractionsFetchLimit = 3;
 
         // Act
-        var vm = new SettingsViewModel(config);
+        var vm = new SettingsViewModel(config, CreateMcpLifecycleService());
 
         // Assert
         Assert.Equal("test-model", vm.LocalModel);
@@ -35,7 +40,7 @@ public class SettingsViewModelTests
         // Arrange
         var config = new NexusConfig();
         config.Models.Local.Endpoint = "http://localhost:11434";
-        var vm = new SettingsViewModel(config);
+        var vm = new SettingsViewModel(config, CreateMcpLifecycleService());
 
         // Act — change fields to make VM dirty so SaveSettingsCommand can execute
         vm.LocalModel = "new-model";
@@ -58,7 +63,7 @@ public class SettingsViewModelTests
         config.Models.OpenAi = null;
 
         // Act
-        var vm = new SettingsViewModel(config);
+        var vm = new SettingsViewModel(config, CreateMcpLifecycleService());
 
         // Assert
         Assert.Equal(string.Empty, vm.GeminiApiKey);
@@ -73,7 +78,7 @@ public class SettingsViewModelTests
         var config = new NexusConfig();
         config.Models.Local.Endpoint = "http://localhost:11434";
         config.Models.Gemini = new ProviderKeyConfig { ApiKey = "old-key" };
-        var vm = new SettingsViewModel(config);
+        var vm = new SettingsViewModel(config, CreateMcpLifecycleService());
 
         // Act — clearing the key makes VM dirty, enabling save
         vm.GeminiApiKey = "";

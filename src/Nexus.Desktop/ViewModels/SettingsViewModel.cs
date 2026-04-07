@@ -72,10 +72,10 @@ public partial class SettingsViewModel : ObservableObject
     public bool HasMcpServers => McpServers.Count > 0;
     public bool IsNotMcpBusy => !IsMcpBusy;
 
-    public SettingsViewModel(NexusConfig config, McpLifecycleService? mcpLifecycle = null)
+    public SettingsViewModel(NexusConfig config, McpLifecycleService mcpLifecycle)
     {
         _config = config;
-        _mcpLifecycle = mcpLifecycle ?? new McpLifecycleService(new McpClientManager(), new ToolRegistry());
+        _mcpLifecycle = mcpLifecycle ?? throw new ArgumentNullException(nameof(mcpLifecycle));
         McpServers.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasMcpServers));
         LoadFromConfig();
     }
@@ -251,12 +251,9 @@ public partial class SettingsViewModel : ObservableObject
             var result = await _mcpLifecycle.ConnectServerAsync(entry);
             if (result.Success)
             {
-                if (SaveMcpConfig())
-                {
-                    HasSuccess = true;
-                    HasError = false;
-                    StatusMessage = $"Connected to MCP server '{result.ServerName}' ({result.ToolCount} tools).";
-                }
+                HasSuccess = true;
+                HasError = false;
+                StatusMessage = $"Connected to MCP server '{result.ServerName}' ({result.ToolCount} tools).";
             }
             else
             {
@@ -277,16 +274,31 @@ public partial class SettingsViewModel : ObservableObject
     {
         if (server is null || IsMcpBusy) return;
 
+        var index = _config.Mcp.Servers.FindIndex(s =>
+            string.Equals(s.Name, server.Name, StringComparison.OrdinalIgnoreCase));
+        if (index < 0)
+        {
+            HasError = true;
+            HasSuccess = false;
+            StatusMessage = $"MCP server '{server.Name}' is not configured.";
+            return;
+        }
+        var existing = _config.Mcp.Servers[index];
+
         IsMcpBusy = true;
         try
         {
             await _mcpLifecycle.DisconnectServerAsync(server.Name);
-            _config.Mcp.Servers.RemoveAll(s => string.Equals(s.Name, server.Name, StringComparison.OrdinalIgnoreCase));
+            _config.Mcp.Servers.RemoveAt(index);
             if (SaveMcpConfig())
             {
                 HasSuccess = true;
                 HasError = false;
                 StatusMessage = $"Disconnected and removed MCP server '{server.Name}'.";
+            }
+            else
+            {
+                _config.Mcp.Servers.Insert(index, existing);
             }
         }
         finally
@@ -362,9 +374,7 @@ public partial class SettingsViewModel : ObservableObject
                 return;
             }
 
-            _config.Mcp.Servers.RemoveAll(s => string.Equals(s.Name, entry.Name, StringComparison.OrdinalIgnoreCase));
-            _config.Mcp.Servers.Add(entry);
-            var saved = SaveMcpConfig();
+            var saved = UpsertServerAndSave(entry);
 
             NewMcpServerName = string.Empty;
             NewMcpServerTransport = "stdio";
@@ -383,6 +393,29 @@ public partial class SettingsViewModel : ObservableObject
             IsMcpBusy = false;
             RefreshMcpServers();
         }
+    }
+
+    private bool UpsertServerAndSave(McpServerEntry entry)
+    {
+        var existingIndex = _config.Mcp.Servers.FindIndex(s =>
+            string.Equals(s.Name, entry.Name, StringComparison.OrdinalIgnoreCase));
+        var hadExisting = existingIndex >= 0;
+        McpServerEntry? existing = hadExisting ? _config.Mcp.Servers[existingIndex] : null;
+
+        if (hadExisting)
+            _config.Mcp.Servers.RemoveAt(existingIndex);
+
+        var insertedIndex = hadExisting ? existingIndex : _config.Mcp.Servers.Count;
+        _config.Mcp.Servers.Insert(insertedIndex, entry);
+
+        if (SaveMcpConfig())
+            return true;
+
+        _config.Mcp.Servers.RemoveAt(insertedIndex);
+        if (hadExisting && existing is not null)
+            _config.Mcp.Servers.Insert(existingIndex, existing);
+
+        return false;
     }
 
     private void RefreshMcpServers()
