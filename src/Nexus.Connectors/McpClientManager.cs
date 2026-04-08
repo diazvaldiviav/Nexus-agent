@@ -199,7 +199,7 @@ public class McpClientManager : IMcpClientManager, IAsyncDisposable
             var args = parameters != null
                 ? new Dictionary<string, object?>(
                     parameters.Select(kvp => new KeyValuePair<string, object?>(kvp.Key, kvp.Value)))
-                : null;
+                : new Dictionary<string, object?>(); // MCP servers expect {} not null
 
             var callResult = await client.CallToolAsync(
                 toolName,

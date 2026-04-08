@@ -15,12 +15,14 @@ public class OllamaLlmProvider : ILlmProvider
 {
     private readonly HttpClient _http;
     private readonly string _endpoint;
+    private readonly int _maxOutputTokens;
 
     public string ProviderName => "ollama";
 
     public OllamaLlmProvider(ModelProviderConfig config, HttpClient? httpClient = null)
     {
         _endpoint = (config.Endpoint ?? "http://localhost:11434").TrimEnd('/');
+        _maxOutputTokens = config.MaxOutputTokens;
         _http = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
     }
 
@@ -36,7 +38,8 @@ public class OllamaLlmProvider : ILlmProvider
         {
             model,
             messages = BuildMessages(systemPrompt, conversationHistory),
-            stream = false
+            stream = false,
+            options = new { num_predict = _maxOutputTokens }
         };
 
         var json = JsonSerializer.Serialize(request);
@@ -66,7 +69,8 @@ public class OllamaLlmProvider : ILlmProvider
         {
             model,
             messages = BuildMessages(systemPrompt, conversationHistory),
-            stream = true
+            stream = true,
+            options = new { num_predict = _maxOutputTokens }
         };
 
         var json = JsonSerializer.Serialize(request);
