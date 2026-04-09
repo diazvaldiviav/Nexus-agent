@@ -5,6 +5,13 @@ using Microsoft.Extensions.Logging;
 
 namespace Nexus.Connectors;
 
+public interface IToolRegistry
+{
+    IReadOnlyDictionary<string, ToolDefinition> Tools { get; }
+    void RegisterToolsFromServer(string serverName, List<ToolDefinition> tools);
+    void UnregisterToolsForServer(string serverName);
+}
+
 /// <summary>
 /// Describes a tool discovered from an MCP server.
 /// </summary>
@@ -20,7 +27,7 @@ public class ToolDefinition
 /// Registry of tools discovered from MCP servers.
 /// Supports registration, lookup, and prompt formatting.
 /// </summary>
-public class ToolRegistry
+public class ToolRegistry : IToolRegistry
 {
     private readonly ConcurrentDictionary<string, ToolDefinition> _tools = new();
     private readonly ILogger<ToolRegistry>? _logger;

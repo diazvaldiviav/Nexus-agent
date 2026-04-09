@@ -150,24 +150,22 @@ static async Task ConnectMcpServersAsync(IServiceProvider sp, NexusConfig config
 {
     if (config.Mcp.Servers.Count == 0) return;
 
-    var manager = sp.GetRequiredService<McpClientManager>();
-    var registry = sp.GetRequiredService<ToolRegistry>();
+    var lifecycle = sp.GetRequiredService<McpLifecycleService>();
 
     foreach (var server in config.Mcp.Servers)
     {
         try
         {
             AnsiConsole.MarkupLine($"[dim]  Connecting to MCP server [bold]{EscapeMarkup(server.Name)}[/] ({EscapeMarkup(server.Command ?? "null")} {EscapeMarkup(string.Join(" ", server.Args))})...[/]");
-            var connected = await manager.ConnectAsync(server);
-            if (connected)
+            var result = await lifecycle.ConnectServerAsync(server);
+            if (result.Success)
             {
-                var tools = await manager.DiscoverToolsAsync(server.Name);
-                registry.RegisterToolsFromServer(server.Name, tools);
-                AnsiConsole.MarkupLine($"[green]  ✓ MCP server [bold]{EscapeMarkup(server.Name)}[/]: {tools.Count} tools discovered[/]");
+                AnsiConsole.MarkupLine($"[green]  ✓ MCP server [bold]{EscapeMarkup(server.Name)}[/]: {result.ToolCount} tools discovered[/]");
             }
             else
             {
-                AnsiConsole.MarkupLine($"[yellow]  ✗ MCP server [bold]{EscapeMarkup(server.Name)}[/]: connection failed[/]");
+                var reason = string.IsNullOrWhiteSpace(result.ErrorMessage) ? "connection failed" : result.ErrorMessage;
+                AnsiConsole.MarkupLine($"[yellow]  ✗ MCP server [bold]{EscapeMarkup(server.Name)}[/]: {EscapeMarkup(reason)}[/]");
             }
         }
         catch (Exception ex)
@@ -444,15 +442,12 @@ static async Task RunConnectCommandAsync(IServiceProvider sp, string[] args, Nex
         .Spinner(Spinner.Known.Dots)
         .StartAsync($"Connecting to {EscapeMarkup(name)}...", async ctx =>
         {
-            var manager = sp.GetRequiredService<McpClientManager>();
-            var registry = sp.GetRequiredService<ToolRegistry>();
-            var connected = await manager.ConnectAsync(entry);
+            var lifecycle = sp.GetRequiredService<McpLifecycleService>();
+            var result = await lifecycle.ConnectServerAsync(entry);
 
-            if (connected)
+            if (result.Success)
             {
-                var tools = await manager.DiscoverToolsAsync(name);
-                registry.RegisterToolsFromServer(name, tools);
-                AnsiConsole.MarkupLine($"[green]Connected to MCP server [bold]{EscapeMarkup(name)}[/] ({tools.Count} tools discovered)[/]");
+                AnsiConsole.MarkupLine($"[green]Connected to MCP server [bold]{EscapeMarkup(name)}[/] ({result.ToolCount} tools discovered)[/]");
 
                 // Persist to config
                 try
@@ -469,7 +464,10 @@ static async Task RunConnectCommandAsync(IServiceProvider sp, string[] args, Nex
             }
             else
             {
-                AnsiConsole.MarkupLine($"[yellow]Could not connect to [bold]{EscapeMarkup(name)}[/]. Check that the command is available.[/]");
+                var reason = string.IsNullOrWhiteSpace(result.ErrorMessage)
+                    ? "Check that the command is available."
+                    : result.ErrorMessage;
+                AnsiConsole.MarkupLine($"[yellow]Could not connect to [bold]{EscapeMarkup(name)}[/]: {EscapeMarkup(reason)}[/]");
             }
         });
 }
@@ -491,11 +489,8 @@ static async Task RunDisconnectCommandAsync(IServiceProvider sp, string[] args, 
         return;
     }
 
-    var manager = sp.GetRequiredService<McpClientManager>();
-    var registry = sp.GetRequiredService<ToolRegistry>();
-
-    await manager.DisconnectAsync(name);
-    registry.UnregisterToolsForServer(name);
+    var lifecycle = sp.GetRequiredService<McpLifecycleService>();
+    await lifecycle.DisconnectServerAsync(name);
 
     config.Mcp.Servers.RemoveAll(s => string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase));
 
@@ -519,8 +514,8 @@ static void RunServersCommand(IServiceProvider sp, NexusConfig config)
         return;
     }
 
-    var manager = sp.GetRequiredService<McpClientManager>();
-    var status = manager.GetServerStatus();
+    var lifecycle = sp.GetRequiredService<McpLifecycleService>();
+    var statuses = lifecycle.GetServerStatuses(config.Mcp.Servers);
 
     var table = new Table();
     table.AddColumn("Name");
@@ -528,18 +523,16 @@ static void RunServersCommand(IServiceProvider sp, NexusConfig config)
     table.AddColumn("Command/URL");
     table.AddColumn("Status");
 
-    foreach (var server in config.Mcp.Servers)
+    foreach (var server in statuses)
     {
-        var commandOrUrl = server.Transport == "sse"
-            ? server.Url ?? ""
-            : $"{server.Command ?? ""} {string.Join(" ", server.Args)}".Trim();
-        var isConnected = status.Keys.Any(k => string.Equals(k, server.Name, StringComparison.OrdinalIgnoreCase));
-        var statusText = isConnected ? "[green]Connected[/]" : "[dim]Disconnected[/]";
+        var statusText = server.IsConnected
+            ? $"[green]Connected ({server.ToolCount} tools)[/]"
+            : "[dim]Disconnected[/]";
 
         table.AddRow(
-            EscapeMarkup(server.Name),
+            EscapeMarkup(server.ServerName),
             EscapeMarkup(server.Transport),
-            EscapeMarkup(commandOrUrl),
+            EscapeMarkup(server.CommandOrUrl),
             statusText);
     }
 

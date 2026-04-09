@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Nexus.Core.Services;
 
 namespace Nexus.Core.Tests;
@@ -195,5 +196,278 @@ public class ToolCallParserTests
         var extracted = ToolCallParser.ExtractJsonBlock(text);
 
         Assert.Equal(json, extracted);
+    }
+
+    [Fact]
+    public void TryParse_WindowsPathWithUnescapedBackslashes_ParsesCorrectly()
+    {
+        // gemma4 outputs Windows paths with single backslashes (invalid JSON)
+        var response = @"[TOOL_CALL: {""name"": ""write_file"", ""arguments"": {""path"": ""D:\Nova Tech\Nexus\scrum_plan.md"", ""content"": ""hello""}}]";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal("write_file", result.Name);
+        Assert.NotNull(result.Arguments);
+        Assert.Equal(@"D:\Nova Tech\Nexus\scrum_plan.md", result.Arguments["path"]);
+        Assert.Equal("hello", result.Arguments["content"]);
+    }
+
+    [Fact]
+    public void SanitizeInvalidEscapes_FixesInvalidButPreservesValid()
+    {
+        // \N and \s are invalid, \n and \" are valid
+        var input = @"""D:\Nova Tech\secret\nope""";
+        var result = ToolCallParser.SanitizeInvalidEscapes(input);
+
+        // \N → \\N, \s → \\s, \n stays \n
+        Assert.Equal(@"""D:\\Nova Tech\\secret\nope""", result);
+    }
+
+    [Fact]
+    public void SanitizeInvalidEscapes_TrailingBackslashQuote_FixedToLiteralBackslash()
+    {
+        // "D:\ecommerce\" followed by } — the \" is a trailing path backslash, not escaped quote
+        var input = @"{""path"": ""D:\ecommerce\""}";
+        var result = ToolCallParser.SanitizeInvalidEscapes(input);
+
+        // Should become \\\" so JSON sees: literal backslash + close quote
+        Assert.Contains(@"\\""", result);
+        Assert.EndsWith(@"\\""}", result);
+    }
+
+    [Fact]
+    public void TryParse_TrailingBackslashInPath_ParsesCorrectly()
+    {
+        // Real case: model generates path ending with \ before closing quote
+        var response = @"[TOOL_CALL: {""name"": ""create_directory"", ""path"": ""D:\Nova Tech\Nexus\ecommerce\""}]";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal("create_directory", result.Name);
+        Assert.Contains("ecommerce", (string)result.Arguments!["path"]);
+    }
+
+    [Fact]
+    public void TryParse_TrailingBackslashInMoveFile_ParsesBothPaths()
+    {
+        // Real case: move_file with destination ending in backslash
+        var response = @"[TOOL_CALL: {""name"": ""move_file"", ""source"": ""D:\docs\model"", ""destination"": ""D:\ecommerce\""}]";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal("move_file", result.Name);
+        Assert.NotNull(result.Arguments);
+        Assert.Contains("model", (string)result.Arguments["source"]);
+        Assert.Contains("ecommerce", (string)result.Arguments["destination"]);
+    }
+
+    [Fact]
+    public void SanitizeInvalidEscapes_MidStringEscapedQuote_PreservedAsIs()
+    {
+        // A real escaped quote mid-string should NOT be treated as trailing backslash
+        var input = @"{""content"": ""He said \""hello\"" today""}";
+        var result = ToolCallParser.SanitizeInvalidEscapes(input);
+
+        // The \" mid-string should stay as \" (escaped quote)
+        Assert.Contains(@"\""hello\""", result);
+    }
+
+    [Fact]
+    public void TryParse_ProperlyEscapedBackslashes_StillWorks()
+    {
+        // Already-valid JSON with double backslashes should not be broken
+        var response = """[TOOL_CALL: {"name": "write_file", "arguments": {"path": "D:\\Nova Tech\\file.txt", "content": "test"}}]""";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal(@"D:\Nova Tech\file.txt", result.Arguments!["path"]);
+    }
+
+    // --- Flat arguments normalization (gemma4:e2b format) ---
+
+    [Fact]
+    public void TryParse_FlatArguments_NormalizesIntoArgumentsDictionary()
+    {
+        // gemma4:e2b omits the "arguments" wrapper
+        var response = """[TOOL_CALL: {"name": "move_file", "source": "/a/b.txt", "destination": "/c/d.txt"}]""";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal("move_file", result.Name);
+        Assert.NotNull(result.Arguments);
+        Assert.Equal("/a/b.txt", result.Arguments["source"]);
+        Assert.Equal("/c/d.txt", result.Arguments["destination"]);
+    }
+
+    [Fact]
+    public void TryParse_FlatArguments_PreservesTypes()
+    {
+        var response = """[TOOL_CALL: {"name": "set_config", "port": 8080, "verbose": true}]""";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal(8080.0, result.Arguments!["port"]);
+        Assert.Equal(true, result.Arguments["verbose"]);
+    }
+
+    [Fact]
+    public void TryParse_ArgumentsPropertyTakesPriorityOverFlatProperties()
+    {
+        // If model produces both "arguments" and a stray flat property, "arguments" wins
+        var response = """[TOOL_CALL: {"name": "read_file", "arguments": {"path": "/correct"}, "path": "/wrong"}]""";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal("/correct", result.Arguments!["path"]);
+    }
+
+    [Fact]
+    public void TryParse_NestedObjectArgument_StoredAsJsonElement()
+    {
+        var response = """[TOOL_CALL: {"name": "create_entity", "arguments": {"metadata": {"key": "value", "count": 3}}}]""";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.IsType<JsonElement>(result.Arguments!["metadata"]);
+        var element = (JsonElement)result.Arguments["metadata"];
+        Assert.Equal(JsonValueKind.Object, element.ValueKind);
+        Assert.Equal("value", element.GetProperty("key").GetString());
+    }
+
+    [Fact]
+    public void TryParse_OnlyName_NullArguments_NoFlatFallback()
+    {
+        var response = """[TOOL_CALL: {"name": "list_tools"}]""";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal("list_tools", result.Name);
+        Assert.Null(result.Arguments);
+    }
+
+    [Fact]
+    public void TryParse_EmptyArgumentsObject_ReturnsEmptyDictionary()
+    {
+        var response = """[TOOL_CALL: {"name": "ping", "arguments": {}}]""";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.NotNull(result.Arguments);
+        Assert.Empty(result.Arguments);
+    }
+
+    [Fact]
+    public void TryParse_FlatArguments_WithWindowsPath_Normalizes()
+    {
+        // gemma4 flat format + unescaped backslashes (two bugs at once)
+        // Using \N and \s which are invalid JSON escapes (not \f which is valid form-feed)
+        var response = @"[TOOL_CALL: {""name"": ""write_file"", ""path"": ""D:\Nova Tech\scrum.md"", ""content"": ""hello""}]";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal("write_file", result.Name);
+        Assert.Equal(@"D:\Nova Tech\scrum.md", result.Arguments!["path"]);
+        Assert.Equal("hello", result.Arguments["content"]);
+    }
+
+    // --- Raw control characters in JSON strings ---
+
+    [Fact]
+    public void SanitizeInvalidEscapes_RawNewlineInString_EscapedToBackslashN()
+    {
+        var json = "{\"name\": \"write_file\", \"content\": \"line1\nline2\"}";
+        var result = ToolCallParser.SanitizeInvalidEscapes(json);
+        Assert.Contains("line1\\nline2", result);
+        // Must parse as valid JSON now
+        using var doc = System.Text.Json.JsonDocument.Parse(result);
+        Assert.Equal("line1\nline2", doc.RootElement.GetProperty("content").GetString());
+    }
+
+    [Fact]
+    public void SanitizeInvalidEscapes_RawCrLfInString_EscapedCorrectly()
+    {
+        var json = "{\"content\": \"a\r\nb\"}";
+        var result = ToolCallParser.SanitizeInvalidEscapes(json);
+        Assert.Contains("a\\r\\nb", result);
+    }
+
+    [Fact]
+    public void SanitizeInvalidEscapes_RawTabInString_EscapedToBackslashT()
+    {
+        var json = "{\"content\": \"col1\tcol2\"}";
+        var result = ToolCallParser.SanitizeInvalidEscapes(json);
+        Assert.Contains("col1\\tcol2", result);
+    }
+
+    [Fact]
+    public void TryParse_ContentWithRawNewlines_ParsesSuccessfully()
+    {
+        var response = "[TOOL_CALL: {\"name\": \"write_file\", \"arguments\": {\"path\": \"test.cs\", \"content\": \"line1\nline2\nline3\"}}]";
+        var result = ToolCallParser.TryParse(response);
+        Assert.NotNull(result);
+        Assert.Equal("write_file", result.Name);
+        Assert.Equal("line1\nline2\nline3", result.Arguments!["content"]);
+    }
+
+    // --- Repetition loop detection ---
+
+    [Fact]
+    public void HasRepetitionLoop_RepeatingSegment_ReturnsTrue()
+    {
+        // Simulates model hallucinating "\\model\\.." repeated many times
+        var repeated = string.Concat(Enumerable.Repeat(@"\model\..", 20));
+        Assert.True(ToolCallParser.HasRepetitionLoop(repeated));
+    }
+
+    [Fact]
+    public void HasRepetitionLoop_NormalPath_ReturnsFalse()
+    {
+        Assert.False(ToolCallParser.HasRepetitionLoop(@"D:\Nova Tech\Nexus\Nexus-agent\ecomerce\model"));
+    }
+
+    [Fact]
+    public void HasRepetitionLoop_ShortString_ReturnsFalse()
+    {
+        Assert.False(ToolCallParser.HasRepetitionLoop("abc"));
+    }
+
+    [Fact]
+    public void SanitizeRepetitionLoops_ReplacesHallucinatedPath()
+    {
+        var repeated = string.Concat(Enumerable.Repeat(@"\model\..", 20));
+        var args = new Dictionary<string, object>
+        {
+            ["paths"] = repeated,
+            ["name"] = "normal_value"
+        };
+
+        ToolCallParser.SanitizeRepetitionLoops(args);
+
+        Assert.Equal("[REPETITION_ERROR]", args["paths"]);
+        Assert.Equal("normal_value", args["name"]); // untouched
+    }
+
+    [Fact]
+    public void TryParse_RepetitionInArgument_MarksAsError()
+    {
+        var repeated = string.Concat(Enumerable.Repeat(@"\\model\\..", 20));
+        var response = "[TOOL_CALL: {\"name\": \"read_multiple_files\", \"arguments\": {\"paths\": \"" + repeated + "\"}}]";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal("read_multiple_files", result.Name);
+        Assert.Equal("[REPETITION_ERROR]", result.Arguments!["paths"]);
     }
 }

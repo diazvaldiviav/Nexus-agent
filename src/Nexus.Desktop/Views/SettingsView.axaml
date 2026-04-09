@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             x:Class="Nexus.Desktop.Views.SettingsView">
+             x:Class="Nexus.Desktop.Views.SettingsView"
+             x:Name="SettingsRoot">
 
     <DockPanel>
         <Border DockPanel.Dock="Top" Padding="16,12" BorderThickness="0,0,0,1" BorderBrush="#313244">
@@ -103,6 +104,68 @@
                                    IsVisible="{Binding RecentInteractionsFetchLimitError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
                                    Margin="0,2,0,0" />
                     </Grid>
+                </StackPanel>
+
+                <!-- MCP Servers -->
+                <StackPanel Spacing="12">
+                    <TextBlock Text="MCP Servers" FontWeight="SemiBold" FontSize="14" />
+
+                    <Border BorderBrush="#313244" BorderThickness="1" CornerRadius="6" Padding="8"
+                            IsVisible="{Binding HasMcpServers}">
+                        <ListBox ItemsSource="{Binding McpServers}" SelectedItem="{Binding SelectedMcpServer}" MaxHeight="220">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto" Margin="0,4">
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding Name}" FontWeight="SemiBold" />
+                                        <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding Status}" />
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
+                                                   Text="{Binding Transport}" Foreground="#bac2de" />
+                                        <TextBlock Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2"
+                                                   Text="{Binding CommandOrUrl}" Foreground="#a6adc8" TextWrapping="Wrap" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Border>
+
+                    <Grid ColumnDefinitions="Auto,Auto,*">
+                        <Button Grid.Column="0" Content="Connect Selected"
+                                Command="{Binding ConnectMcpServerCommand}"
+                                CommandParameter="{Binding SelectedMcpServer}"
+                                IsEnabled="{Binding IsNotMcpBusy}"
+                                Margin="0,0,8,0" />
+                        <Button Grid.Column="1" Content="Disconnect Selected"
+                                Command="{Binding DisconnectMcpServerCommand}"
+                                CommandParameter="{Binding SelectedMcpServer}"
+                                IsEnabled="{Binding IsNotMcpBusy}" />
+                    </Grid>
+
+                    <Border BorderBrush="#313244" BorderThickness="1" CornerRadius="6" Padding="12">
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="Add server" FontWeight="SemiBold" />
+                            <Grid ColumnDefinitions="140,*" RowDefinitions="Auto,Auto,Auto,Auto">
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="Name:" VerticalAlignment="Center" />
+                                <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding NewMcpServerName}" />
+
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="Transport:" VerticalAlignment="Center" Margin="0,8,0,0" />
+                                <ComboBox Grid.Row="1" Grid.Column="1" Margin="0,8,0,0"
+                                          ItemsSource="{Binding AvailableMcpTransports}"
+                                          SelectedItem="{Binding NewMcpServerTransport}" />
+
+                                <TextBlock Grid.Row="2" Grid.Column="0" Text="Command / URL:" VerticalAlignment="Center" Margin="0,8,0,0" />
+                                <TextBox Grid.Row="2" Grid.Column="1" Margin="0,8,0,0"
+                                         Text="{Binding NewMcpServerCommandOrUrl}" />
+
+                                <TextBlock Grid.Row="3" Grid.Column="0" Text="Args (space separated):" VerticalAlignment="Center" Margin="0,8,0,0" />
+                                <TextBox Grid.Row="3" Grid.Column="1" Margin="0,8,0,0"
+                                         Text="{Binding NewMcpServerArgs}" />
+                            </Grid>
+
+                            <Button Content="Add and Connect" Command="{Binding AddMcpServerCommand}"
+                                    HorizontalAlignment="Left" Padding="16,8"
+                                    IsEnabled="{Binding IsNotMcpBusy}" />
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
 
                 <!-- Save -->

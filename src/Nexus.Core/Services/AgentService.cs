@@ -20,8 +20,10 @@ public class AgentService : IAgentService
     private readonly LlmProviderFactory _providerFactory;
     private readonly IInteractionSummarizer _summarizer;
     private readonly IToolExecutor? _toolExecutor;
+    private readonly IToolArgumentValidator? _argumentValidator;
     private readonly EntityResolver? _entityResolver;
     private readonly MemoryCompressor? _compressor;
+    private readonly ContextWindowManager? _contextWindowManager;
     private readonly ILogger<AgentService>? _logger;
     private readonly List<ConversationMessage> _conversationHistory = new();
     private Task? _pendingExtraction;
@@ -37,8 +39,10 @@ public class AgentService : IAgentService
         LlmProviderFactory providerFactory,
         IInteractionSummarizer summarizer,
         IToolExecutor? toolExecutor = null,
+        IToolArgumentValidator? argumentValidator = null,
         EntityResolver? entityResolver = null,
         MemoryCompressor? compressor = null,
+        ContextWindowManager? contextWindowManager = null,
         ILogger<AgentService>? logger = null)
     {
         _config = config;
@@ -49,8 +53,10 @@ public class AgentService : IAgentService
         _providerFactory = providerFactory;
         _summarizer = summarizer;
         _toolExecutor = toolExecutor;
+        _argumentValidator = argumentValidator;
         _entityResolver = entityResolver;
         _compressor = compressor;
+        _contextWindowManager = contextWindowManager;
         _logger = logger;
     }
 
@@ -74,7 +80,15 @@ public class AgentService : IAgentService
         var useCloud = _modelRouter.IsCloud(TaskType.MemoryQueryResponse);
         var modelConfig = useCloud ? _config.Models.Cloud : _config.Models.Local;
 
-        var response = await CallLlmAsync(systemPrompt, userMessage, modelConfig, cancellationToken);
+        // Thread safety: _conversationHistory is mutated in-place by CompactIfNeededAsync.
+        // This is safe because background extraction uses historySnapshot (a copy via ToList()),
+        // and FlushPendingExtractionAsync is awaited at the start of each ChatAsync call.
+        if (_contextWindowManager is not null)
+            await _contextWindowManager.CompactIfNeededAsync(
+                systemPrompt, _conversationHistory, modelConfig, cancellationToken)
+                .ConfigureAwait(false);
+
+        var response = await CallLlmAsync(systemPrompt, modelConfig, cancellationToken);
 
         // Tool call loop: detect tool calls, execute, feed result back to LLM
         var maxIterations = _config.Mcp.MaxToolCallIterations;
@@ -91,10 +105,17 @@ public class AgentService : IAgentService
 
             var toolResult = await ExecuteToolWithTimeoutAsync(toolCall, cancellationToken).ConfigureAwait(false);
 
+            Console.Error.WriteLine($"[AgentService DEBUG] Tool '{toolCall.Name}' result (first 500): {toolResult[..Math.Min(500, toolResult.Length)]}");
+
             _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = response });
             _conversationHistory.Add(new ConversationMessage { Role = "user", Content = $"[Tool Result for {toolCall.Name}]:\n{toolResult}" });
 
-            response = await CallLlmAsync(systemPrompt, $"[Tool Result for {toolCall.Name}]:\n{toolResult}", modelConfig, cancellationToken);
+            if (_contextWindowManager is not null)
+                await _contextWindowManager.CompactIfNeededAsync(
+                    systemPrompt, _conversationHistory, modelConfig, cancellationToken)
+                    .ConfigureAwait(false);
+
+            response = await CallLlmAsync(systemPrompt, modelConfig, cancellationToken);
         }
 
         _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = response });
@@ -248,6 +269,11 @@ public class AgentService : IAgentService
         var useCloud = _modelRouter.IsCloud(TaskType.MemoryQueryResponse);
         var modelConfig = useCloud ? _config.Models.Cloud : _config.Models.Local;
 
+        if (_contextWindowManager is not null)
+            await _contextWindowManager.CompactIfNeededAsync(
+                systemPrompt, _conversationHistory, modelConfig, cancellationToken)
+                .ConfigureAwait(false);
+
         var fullResponse = new System.Text.StringBuilder();
 
         var provider = _providerFactory.GetRequiredProvider(modelConfig.Provider);
@@ -277,8 +303,15 @@ public class AgentService : IAgentService
 
             var toolResult = await ExecuteToolWithTimeoutAsync(toolCall, cancellationToken).ConfigureAwait(false);
 
+            Console.Error.WriteLine($"[AgentService DEBUG] Tool '{toolCall.Name}' result (first 500): {toolResult[..Math.Min(500, toolResult.Length)]}");
+
             _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = response });
             _conversationHistory.Add(new ConversationMessage { Role = "user", Content = $"[Tool Result for {toolCall.Name}]:\n{toolResult}" });
+
+            if (_contextWindowManager is not null)
+                await _contextWindowManager.CompactIfNeededAsync(
+                    systemPrompt, _conversationHistory, modelConfig, cancellationToken)
+                    .ConfigureAwait(false);
 
             // Re-stream the follow-up LLM call
             fullResponse.Clear();
@@ -374,12 +407,34 @@ public class AgentService : IAgentService
         if (_toolExecutor is null)
             return "Error: No tool executor available.";
 
+        // Semantic validation: normalize paths, check existence, fuzzy-correct
+        var effectiveArguments = toolCall.Arguments;
+        if (_argumentValidator is not null)
+        {
+            var outcome = await _argumentValidator.ValidateAsync(
+                toolCall.Name, toolCall.Arguments, cancellationToken).ConfigureAwait(false);
+
+            if (!outcome.IsValid)
+            {
+                _logger?.LogWarning("[PathValidator] Tool '{Tool}' rejected: {Error}", toolCall.Name, outcome.ErrorMessage);
+                return $"[PathValidationError] {outcome.ErrorMessage}";
+            }
+
+            if (outcome.WasCorrected)
+            {
+                _logger?.LogInformation("[PathValidator] Tool '{Tool}' corrected: {Note}", toolCall.Name, outcome.ErrorMessage);
+                Console.Error.WriteLine($"[PathValidator] Corrected: {outcome.ErrorMessage}");
+            }
+
+            effectiveArguments = outcome.CorrectedArguments;
+        }
+
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromSeconds(_config.Mcp.ToolCallTimeoutSeconds));
 
         try
         {
-            return await _toolExecutor.InvokeToolAsync("", toolCall.Name, toolCall.Arguments, cts.Token).ConfigureAwait(false);
+            return await _toolExecutor.InvokeToolAsync("", toolCall.Name, effectiveArguments, cts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -401,7 +456,6 @@ public class AgentService : IAgentService
 
     private async Task<string> CallLlmAsync(
         string systemPrompt,
-        string userMessage,
         ModelProviderConfig modelConfig,
         CancellationToken cancellationToken)
     {

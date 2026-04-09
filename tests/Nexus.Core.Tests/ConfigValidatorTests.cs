@@ -56,11 +56,17 @@ public class ConfigValidatorTests
     }
 
     [Fact]
-    public void ValidateLocalEndpoint_Empty_ReturnsError()
+    public void ValidateLocalEndpoint_Empty_ReturnsNull()
     {
         var result = ConfigValidator.ValidateLocalEndpoint("");
-        Assert.NotNull(result);
-        Assert.Contains("URL", result);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ValidateLocalEndpoint_Null_ReturnsNull()
+    {
+        var result = ConfigValidator.ValidateLocalEndpoint(null);
+        Assert.Null(result);
     }
 
     [Fact]

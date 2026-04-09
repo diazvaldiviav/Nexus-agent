@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Nexus.Connectors;
 using Nexus.Core;
 using Nexus.Core.Abstractions;
 using Nexus.Core.Config;
@@ -18,6 +19,7 @@ public class MainWindowViewModelTests
         services.AddSingleton<IActionLogNotifier>(fakeKg);
         services.AddSingleton<IAgentService>(new FakeAgentService());
         services.AddSingleton(new NexusConfig());
+        services.AddSingleton(new McpLifecycleService(new FakeMcpClientManager(), new ToolRegistry()));
         services.AddTransient<ChatViewModel>();
         services.AddTransient<MemoryGraphViewModel>();
         services.AddTransient<SettingsViewModel>();

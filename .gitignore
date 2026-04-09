@@ -77,3 +77,6 @@ docs/
 
 #txt files
 *.txt
+
+#folders
+ecomerce/
