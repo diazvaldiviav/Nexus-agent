@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging;
 using Nexus.Hardware.Abstractions;
 using Nexus.Hardware.Envelopes;
@@ -6,6 +7,7 @@ using Nexus.Hardware.Windows.Internals;
 
 namespace Nexus.Hardware.Windows.Profilers;
 
+[SupportedOSPlatform("windows")]
 internal sealed class DxgiGpuProfiler : IGpuProfiler
 {
     private const long FourGigabytes = 4L * 1024 * 1024 * 1024;

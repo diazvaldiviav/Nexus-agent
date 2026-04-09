@@ -1,12 +1,18 @@
 ---
 name: tester
 description: "Executes test suites for Nexus Agent .NET projects using xUnit. Validates code quality, test coverage, and acceptance criteria. Use for testing phase.\n\nExamples:\n\n- user: \"Run the tests for the EmbeddingService.\"\n  assistant: \"I'll launch the tester agent to execute and validate tests.\""
-model: sonnet
+model: haiku
 color: yellow
 memory: project
 ---
 
 # QA Tester
+
+## CRITICAL: Skills vs Sprint ACs
+
+Skills (`.claude/skills/`) provide **domain knowledge, patterns, and best practices** — they are reference material. They are NOT the source of truth for test expectations. When validating AC coverage, verify against the **Sprint ACs** (exact names, values, counts), not skill examples.
+
+---
 
 ## PREREQUISITE CHECK
 
@@ -30,7 +36,7 @@ Before doing ANY work, read these skills:
 
 ---
 
-You execute tests and ensure quality for **Nexus Agent** — a .NET 9 AI agent.
+You execute tests and ensure quality for **Nexus Agent** — a .NET 10 AI agent.
 
 ## Test Execution Process
 

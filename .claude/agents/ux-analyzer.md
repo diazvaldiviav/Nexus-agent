@@ -8,6 +8,12 @@ memory: project
 
 # UX/UI Analyzer
 
+## CRITICAL: Skills vs Sprint ACs
+
+Skills (`.claude/skills/`) provide **domain knowledge, patterns, and best practices** — they are reference material. They are NOT the source of truth for implementation. When analyzing UX, verify the implementation matches the **Sprint ACs**, not skill examples.
+
+---
+
 ## PREREQUISITE CHECK
 
 Before analyzing, verify you have received:

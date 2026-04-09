@@ -4,12 +4,21 @@
     <Project Path="src/Nexus.Connectors/Nexus.Connectors.csproj" />
     <Project Path="src/Nexus.Core/Nexus.Core.csproj" />
     <Project Path="src/Nexus.Desktop/Nexus.Desktop.csproj" />
+    <Project Path="src/Nexus.Distribution/Nexus.Distribution.csproj" />
+    <Project Path="src/Nexus.Hardware/Nexus.Hardware.csproj" />
+    <Project Path="src/Nexus.Hardware.Windows/Nexus.Hardware.Windows.csproj" />
     <Project Path="src/Nexus.Memory/Nexus.Memory.csproj" />
+    <Project Path="src/Nexus.ModelRegistry/Nexus.ModelRegistry.csproj" />
+    <Project Path="src/Nexus.Models/Nexus.Models.csproj" />
+    <Project Path="src/Nexus.Recommendation/Nexus.Recommendation.csproj" />
+    <Project Path="src/Nexus.Runtime/Nexus.Runtime.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Nexus.Core.Tests/Nexus.Core.Tests.csproj" />
+    <Project Path="tests/Nexus.Desktop.Tests/Nexus.Desktop.Tests.csproj" />
+    <Project Path="tests/Nexus.Hardware.Tests/Nexus.Hardware.Tests.csproj" />
     <Project Path="tests/Nexus.Integration.Tests/Nexus.Integration.Tests.csproj" />
     <Project Path="tests/Nexus.Memory.Tests/Nexus.Memory.Tests.csproj" />
-    <Project Path="tests/Nexus.Desktop.Tests/Nexus.Desktop.Tests.csproj" />
+    <Project Path="tests/Nexus.Models.Tests/Nexus.Models.Tests.csproj" />
   </Folder>
 </Solution>

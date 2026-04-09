@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.Arm;
 using System.Runtime.Intrinsics.X86;
+using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging;
 using Nexus.Hardware.Abstractions;
 using Nexus.Hardware.Envelopes;
@@ -8,6 +9,7 @@ using Nexus.Hardware.Windows.Internals;
 
 namespace Nexus.Hardware.Windows.Profilers;
 
+[SupportedOSPlatform("windows")]
 internal sealed class WmiCpuProfiler : ICpuProfiler
 {
     private const string WmiQueryText = "SELECT Name, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed, Architecture FROM Win32_Processor";

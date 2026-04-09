@@ -1,4 +1,4 @@
-# Skill: Project Knowledge — Nexus Agent (.NET 9)
+# Skill: Project Knowledge — Nexus Agent (.NET 10)
 
 > Load this skill when working on any project task. Contains the architecture overview, file structure, technology stack, conventions, and design decisions for the Nexus Agent application.
 
@@ -175,17 +175,27 @@ nexus-agent/
 │   │   └── HostStateClassifier.cs   # Static classifier: ClassifyCpu/Ram/Gpu → state enums via thresholds
 │   │
 │   ├── Nexus.Hardware.Windows/  # Windows-specific hardware detection (WMI, DXGI, P/Invoke)
+│   │   ├── HardwareServiceCollectionExtensions.cs # Public static: AddNexusHardwareWindows() — registers 10 services (4 infra + 3 profilers + 1 composite + 2 monitors)
 │   │   ├── Internals/           # Internal abstractions (Nexus.Hardware.Windows.Internals)
 │   │   │   ├── IWmiQuery.cs         # Internal interface: Query(string wql) → IReadOnlyList<IReadOnlyDictionary>
 │   │   │   ├── WmiQueryService.cs   # Internal sealed: ManagementObjectSearcher with COM disposal
 │   │   │   ├── IDxgiAdapterProvider.cs # Internal interface: GetAdapters() → IReadOnlyList<DxgiAdapterInfo>
 │   │   │   ├── DxgiAdapterProvider.cs # Internal sealed: IDxgiAdapterProvider impl via Vortice.DXGI COM interop
 │   │   │   ├── DxgiAdapterInfo.cs   # Internal record: 7 fields (Description, VendorId, Memory, etc.)
-│   │   │   └── MemoryStatusResult.cs # Internal record: 5 fields (MemoryLoad, Physical, PageFile)
+│   │   │   ├── MemoryStatusResult.cs # Internal record: 5 fields (MemoryLoad, Physical, PageFile)
+│   │   │   ├── LhmSensorReading.cs  # Internal record struct + LhmHardwareType/LhmSensorType enums
+│   │   │   ├── ILhmComputer.cs      # Internal interface: TryOpen() + ReadSensors() → IReadOnlyList<LhmSensorReading>
+│   │   │   ├── LhmComputerWrapper.cs # Internal sealed: ILhmComputer impl via LibreHardwareMonitor (CPU+GPU sensors, not RAM)
+│   │   │   ├── IPerfCounterProvider.cs # Internal interface: ReadCpuUsage/ReadAvailableRamMb/ReadPagesPerSecond + IDisposable
+│   │   │   └── PerfCounterProvider.cs # Internal sealed: IPerfCounterProvider impl via System.Diagnostics.PerformanceCounter
+│   │   ├── Monitoring/          # Runtime monitoring implementations (Nexus.Hardware.Windows.Monitoring)
+│   │   │   ├── LhmSensorMonitor.cs  # Internal sealed: ISensorMonitor + IDisposable via ILhmComputer (Task.Run for 10-50ms LHM reads)
+│   │   │   └── PerfCounterMonitor.cs # Internal sealed: IDisposable, synchronous ReadSnapshot() → SystemHealthSnapshot
 │   │   └── Profilers/           # Hardware profiler implementations (Nexus.Hardware.Windows.Profilers)
 │   │       ├── WmiCpuProfiler.cs    # Internal sealed: ICpuProfiler via WMI + SIMD intrinsics
 │   │       ├── Win32RamProfiler.cs  # Internal partial: IRamProfiler via P/Invoke GlobalMemoryStatusEx
-│   │       └��─ DxgiGpuProfiler.cs   # Internal sealed: IGpuProfiler via IDxgiAdapterProvider
+│   │       ├── DxgiGpuProfiler.cs   # Internal sealed: IGpuProfiler via IDxgiAdapterProvider
+│   │       └── WindowsHostProfiler.cs # Public sealed: IHostProfiler compositor — concurrent CPU/RAM/GPU via Task.WhenAll, ProfileSafe<T> fallbacks, ClassifyArchitecture
 │   ├── Nexus.Models/            # LLM model domain (candidates, profiles, catalog)
 │   ├── Nexus.Recommendation/   # Decision engine (gates, scoring, ranking)
 │   ├── Nexus.Distribution/     # Model download from sources
@@ -197,7 +207,7 @@ nexus-agent/
 │   ├── Nexus.Core.Tests/        # Core orchestration tests
 │   ├── Nexus.Integration.Tests/ # End-to-end tests
 │   ├── Nexus.Desktop.Tests/     # Desktop ViewModel tests (Avalonia.Headless.XUnit)
-│   ├── Nexus.Hardware.Tests/    # Hardware tests: enums, envelopes, profile, classifier, WmiCpuProfiler, Win32RamProfiler, records (101 tests)
+│   ├── Nexus.Hardware.Tests/    # Hardware tests: enums, envelopes, profile, classifier, WmiCpuProfiler, Win32RamProfiler, DxgiGpuProfiler, WindowsHostProfiler, LhmSensorMonitor, PerfCounterMonitor, DI registration [Trait("Category","Integration")], records (164 tests)
 │   └── Nexus.Models.Tests/      # Model domain tests
 │
 ├── docs/                        # Documentation

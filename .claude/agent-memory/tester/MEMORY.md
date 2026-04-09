@@ -6,6 +6,9 @@
 - Test framework: xUnit + hand-rolled fakes (no Moq/NSubstitute used in practice)
 - Naming convention: MethodName_Scenario_ExpectedResult
 
+## Known Pre-existing Failures
+- DIFactoryTests.DI_OllamaProvider_ResolvesOllamaEmbeddingService — FAILS on hardware-intelligence branch (FallbackEmbeddingService returned instead of OllamaEmbeddingService). Confirmed pre-existing: fails even without this sprint's changes. Not caused by metadata hardening sprint.
+
 ## Test Counts by Sprint
 - Sprint 1 Day 1 complete: 53 tests total (35 Memory + 13 Core + 5 Integration)
 - Sprint 1 Day 2 complete: 66 tests total (48 Memory + 13 Core + 5 Integration)
@@ -244,6 +247,21 @@
   - ConfigValidator.Validate gate added to Program.cs Phase 3b — before DI setup, returns exit code 1 on error
   - Build: 0 errors, 0 warnings
 
+- HW WmiCpuProfiler sprint complete: 386 tests total (103 Memory + 70 Core + 50 Integration + 76 Desktop + 86 Hardware + 1 Models)
+  - Added: 18 new tests in Nexus.Hardware.Tests
+    - WmiCpuProfilerTests x11 (ProfileAsync x5, MapArchitecture_KnownValues x4 [Theory], MapArchitecture_UnknownValue, ComputeSimdScore, Constructor_NullWmiQuery, ProfileAsync_ScoresAreCapped, ProfileAsync_ComException)
+    - SensorSnapshotTests x2 (Constructor_SetsAllProperties, Equality_SameValues_AreEqual)
+    - SystemHealthSnapshotTests x2 (Constructor_SetsAllProperties, Equality_SameValues_AreEqual)
+  - New source files: src/Nexus.Hardware.Windows/Profilers/WmiCpuProfiler.cs, src/Nexus.Hardware.Windows/Internals/{IWmiQuery.cs, WmiQueryService.cs, IDxgiAdapterProvider.cs, DxgiAdapterInfo.cs, MemoryStatusResult.cs}
+  - New Monitoring types: src/Nexus.Hardware/Monitoring/SensorSnapshot.cs (6-field record), src/Nexus.Hardware/Monitoring/SystemHealthSnapshot.cs (4-field record)
+  - ISensorMonitor evolved: ReadAsync(ct) + IsAvailable (was empty marker interface)
+  - Nexus.Hardware.Windows.csproj: 6 NuGet packages (LibreHardwareMonitorLib, DI.Abstractions, Logging.Abstractions, PerformanceCounter, System.Management, Vortice.DXGI)
+  - Nexus.Hardware.Tests.csproj: NSubstitute 5.3.0 added
+  - Placeholder.cs deleted (confirmed absent)
+  - FakeWmiQuery: hand-rolled fake (params Dictionary[], ThrowingWmiQuery inner class via Throwing(ex) factory)
+  - WmiCpuProfiler: internal sealed, IWmiQuery + ILogger constructor, Task.Run for WMI, ManagementException+COMException → degraded envelope, MapArchitecture + ResolveArchitectureClass + ComputeSimdScore all internal static (testable via InternalsVisibleTo)
+  - Build: 0 errors, 0 warnings
+
 - Markdown rendering sprint complete: 282 tests total (103 Memory + 69 Core + 50 Integration + 60 Desktop)
   - Added: 14 new test runs in MarkdownRendererTests.cs (13 methods + 1 AvaloniaTheory with 2 InlineData cases)
     - Render_BoldText_ReturnsBoldRun (AC-1)
@@ -266,6 +284,26 @@
   - AC-9 (self-contained control): verified by code inspection — MarkdownTextBlock is UserControl in its own file, no external dependencies beyond Markdig
   - All tests use [AvaloniaFact]/[AvaloniaTheory] (headless Avalonia required for TextBlock/Run Inlines to resolve)
   - Markdig added as NuGet dependency to Nexus.Desktop project
+  - Build: 0 errors, 0 warnings
+
+- Hardware Envelopes sprint complete: 338 tests total (103 Memory + 70 Core + 50 Integration + 76 Desktop + 38 Hardware + 1 Models)
+  - Added: new Nexus.Hardware.Tests project with 38 tests
+    - CpuEnvelopeTests x7, RamEnvelopeTests x7, GpuEnvelopeTests x9, HostCapabilityProfileTests x7, EnumTests x8
+  - New source files: CpuEnvelope.cs, RamEnvelope.cs, GpuEnvelope.cs (all namespace Nexus.Hardware.Envelopes), HostCapabilityProfile.cs
+  - Nexus.Hardware.csproj has ZERO PackageReference entries (pure BCL only)
+  - Build: 0 errors, 0 warnings
+
+- HostStateClassifier sprint complete: 362 tests total (103 Memory + 70 Core + 50 Integration + 76 Desktop + 62 Hardware + 1 Models)
+  - Added: 24 new tests in HostStateClassifierTests.cs (Hardware.Tests)
+    - ClassifyCpu_ReturnsExpectedState x8 [Theory/InlineData]: boundary cases at 0.0, 0.24, 0.25, 0.49, 0.50, 0.74, 0.75, 1.0
+    - ClassifyRam_ReturnsExpectedState x8 [Theory/InlineData]: boundary cases at 0, 3.999B, 4B, 7.999B, 8B, 15.999B, 16B, 32B
+    - ClassifyGpu_ReturnsExpectedState x8 [Theory/InlineData]: boundary cases at -1, 0, 1, 3.999B, 4B, 7.999B, 8B, 16B
+  - New source: src/Nexus.Hardware/Abstractions/ISensorMonitor.cs (empty marker interface)
+  - New source: src/Nexus.Hardware/HostStateClassifier.cs (public static class, 8 internal const thresholds)
+  - ISensorMonitor: file-scoped namespace Nexus.Hardware.Abstractions, XML doc comment, single-line interface body
+  - HostStateClassifier: 3 CPU thresholds (0.25/0.50/0.75), 3 RAM thresholds (4B/8B/16B), 2 GPU thresholds (4B/8B)
+  - GPU None boundary: <= 0 (inclusive, handles negative safeGpuBudget from NoGpu factory)
+  - Nexus.Hardware.csproj: InternalsVisibleTo for Hardware.Tests, ZERO PackageReference elements
   - Build: 0 errors, 0 warnings
 
 ## Known Formatting Issues
@@ -294,3 +332,17 @@
 - AC-12 covered by E2EFlowTests.BugFix002_ExtractionPromptRequiresEnglishOutput — asserts prompt
   contains "ALL output MUST be in English". PASS.
 - Treat AC-11 as PARTIAL (automated contract check passes; full conversation accumulation manual)
+
+## HW Sprint 2 Day 2 complete: 401 tests total (101 Memory + 70 Core + 50 Integration + 76 Desktop + 103 Hardware + 1 Models)
+  - Added: 15 new Win32RamProfilerTests (4 [Fact] + 1 [Theory] x10 inline data = 14 theory cases + 1 constructor = 15)
+    - ProfileAsync_32GB_20GBAvail_CorrectBudgets (AC-5/6/7)
+    - ProfileAsync_8GB_1GBAvail_HighPressure (AC-8)
+    - ProfileAsync_ZeroAvailable_NotViable (AC-5/6/7)
+    - ProfileAsync_ExceptionThrown_DegradedEnvelope (AC-9)
+    - ClassifyPressure_BoundaryValues x10 inline data (AC-8)
+    - Constructor_NoException (AC-1)
+  - New source: Win32RamProfiler.cs (internal partial class, LibraryImport P/Invoke, MEMORYSTATUSEX 64-byte struct), DxgiAdapterProvider.cs, DxgiGpuProfiler.cs
+  - New fake: TestableRamProfiler.cs (overrides GetMemoryStatus(), Throwing factory) (AC-11)
+  - AllowUnsafeBlocks: true in Nexus.Hardware.Windows.csproj (AC-10)
+  - No GPU test files exist (US-2.3 tests deferred to Day 3 per spec)
+  - Build: 0 errors, 0 warnings

@@ -1,7 +1,9 @@
 using System.Management;
+using System.Runtime.Versioning;
 
 namespace Nexus.Hardware.Windows.Internals;
 
+[SupportedOSPlatform("windows")]
 internal sealed class WmiQueryService : IWmiQuery
 {
     public IReadOnlyList<IReadOnlyDictionary<string, object>> Query(string wql)

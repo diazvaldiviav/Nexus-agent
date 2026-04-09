@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging;
 using Nexus.Hardware.Abstractions;
 using Nexus.Hardware.Envelopes;
@@ -11,6 +12,7 @@ namespace Nexus.Hardware.Windows.Profilers;
 /// into discrete capability states and producing a complete <see cref="HostCapabilityProfile"/>.
 /// Individual profiler failures are isolated — the remaining subsystems still report valid data.
 /// </summary>
+[SupportedOSPlatform("windows")]
 public sealed class WindowsHostProfiler : IHostProfiler
 {
     private readonly ICpuProfiler _cpuProfiler;
