@@ -1,4 +1,4 @@
-# Skill: Design Patterns — Nexus Agent (.NET 9)
+# Skill: Design Patterns — Nexus Agent (.NET 10)
 
 > Reusable architectural patterns specific to the Nexus Agent application. Consult before any architectural decision.
 

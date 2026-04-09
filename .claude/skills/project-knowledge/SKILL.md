@@ -1,4 +1,4 @@
-# Skill: Project Knowledge — Nexus Agent (.NET 9)
+# Skill: Project Knowledge — Nexus Agent (.NET 10)
 
 > Load this skill when working on any project task. Contains the architecture overview, file structure, technology stack, conventions, and design decisions for the Nexus Agent application.
 
@@ -17,7 +17,7 @@ All architectural decisions, flows, and design specifications are defined in the
 
 ## What is Nexus Agent?
 
-A **personal AI agent** built in C# (.NET 9) with:
+A **personal AI agent** built in C# (.NET 10) with:
 - **Persistent knowledge graph memory** — remembers everything across conversations
 - **LLM orchestration** — local (Ollama) and cloud (Anthropic/OpenAI/Google) providers
 - **MCP connectivity** — connects to external tools via Model Context Protocol
@@ -97,7 +97,8 @@ nexus-agent/
 │   │   ├── Abstractions/        # Interfaces (Nexus.Core.Abstractions)
 │   │   │   ├── IAgentService.cs    # ChatStreamAsync, ClearHistoryAsync, FlushPendingExtractionAsync
 │   │   │   ├── ILlmProvider.cs     # ChatAsync, ChatStreamAsync
-│   │   │   └── IToolExecutor.cs    # Cross-layer (impl in Connectors)
+│   │   │   ├── IToolExecutor.cs    # Cross-layer (impl in Connectors)
+│   │   │   └── ISchemaValidator.cs  # Schema validation contract + SchemaValidationResult (impl in Connectors)
 │   │   ├── Providers/           # LLM providers (Nexus.Core.Providers)
 │   │   │   ├── OllamaLlmProvider.cs
 │   │   │   ├── GeminiLlmProvider.cs
@@ -107,6 +108,7 @@ nexus-agent/
 │   │   │   └── LlmProviderFactory.cs
 │   │   ├── Services/            # Orchestration (Nexus.Core.Services)
 │   │   │   ├── AgentService.cs      # Main agent loop
+│   │   │   ├── ContextWindowManager.cs # Context window estimation + conversation compaction
 │   │   │   ├── ModelRouter.cs       # Local vs cloud selection
 │   │   │   ├── PromptBuilder.cs     # Memory context + tool definitions
 │   │   │   └── ToolCallParser.cs    # [TOOL_CALL: {...}] parser
@@ -121,8 +123,9 @@ nexus-agent/
 │   │
 │   ├── Nexus.Connectors/        # External tool connectivity (MCP SDK)
 │   │   ├── McpClientManager.cs  # MCP client: stdio/SSE transport, tool discovery, invocation
-│   │   ├── ToolRegistry.cs      # Dynamic tool registry (ConcurrentDictionary, thread-safe)
-│   │   ├── McpToolExecutor.cs   # IToolExecutor impl: routes tool calls through MCP
+│   │   ├── ToolRegistry.cs      # Dynamic tool registry (ConcurrentDictionary, thread-safe) + ToolResolution record + ResolveTool() fuzzy name resolution (exact → case-insensitive → Levenshtein ≤2 → fail)
+│   │   ├── McpToolExecutor.cs   # IToolExecutor impl: routes tool calls through MCP, uses ResolveTool() for fuzzy name matching
+│   │   ├── SchemaValidator.cs   # ISchemaValidator impl: validates tool args against InputSchema (required check, type coercion string→bool/number/array, unknown arg stripping)
 │   │   └── McpServiceCollectionExtensions.cs # AddNexusMcp() DI extension
 │   │
 │   ├── Nexus.Desktop/           # Avalonia UI (MVVM)
@@ -263,6 +266,13 @@ services.AddSingleton(sp => new MemoryCompressor(
 services.AddSingleton(sp => new PromptBuilder(
     sp.GetRequiredService<MemoryContextBuilder>(), config.Agent,
     sp.GetService<IToolExecutor>()));  // Optional IToolExecutor for tool definitions in prompt
+// ContextWindowManager: estimates token usage, compacts conversation history when approaching model context window limit
+services.AddSingleton(sp => new ContextWindowManager(
+    sp.GetRequiredService<IInteractionSummarizer>(),
+    sp.GetRequiredService<PromptBuilder>(),
+    config.Memory,
+    sp.GetService<ILogger<ContextWindowManager>>()));
+// AgentService receives ContextWindowManager? (optional) — compacts history before each LLM call
 // IAgentService forwarding registration (Sprint 4 Day 3): Desktop resolves IAgentService, CLI resolves AgentService
 services.AddSingleton<IAgentService>(sp => sp.GetRequiredService<AgentService>());
 
@@ -270,6 +280,7 @@ services.AddSingleton<IAgentService>(sp => sp.GetRequiredService<AgentService>()
 services.AddSingleton<McpClientManager>();  // MCP SDK client (stdio + SSE transports)
 services.AddSingleton<ToolRegistry>();      // Dynamic tool registry from MCP servers
 services.AddSingleton<IToolExecutor, McpToolExecutor>(); // Cross-layer: interface in Core, impl in Connectors
+services.AddSingleton<ISchemaValidator>(sp => new SchemaValidator(...)); // Validates tool args against InputSchema (required, types, coercion)
 ```
 
 ### Configuration Model
@@ -287,9 +298,10 @@ public class NexusConfig
 // ModelsConfig has: Local, Cloud, Routing, Gemini?, Anthropic?, OpenAi?
 // Per-provider keys: models.gemini.api_key, models.anthropic.api_key, models.openai.api_key
 // Resolved via ModelsConfig.GetApiKey("provider") — 3-tier fallback
-// McpConfig has: List<McpServerEntry> Servers, MaxToolCallIterations (int, default 3), ToolCallTimeoutSeconds (int, default 30)
+// McpConfig has: List<McpServerEntry> Servers, MaxToolCallIterations (int, default 3), ToolCallTimeoutSeconds (int, default 30), SchemaValidationEnabled (bool, default true), TypeCoercionEnabled (bool, default true)
 // McpServerEntry has: Name, Transport ("stdio"|"sse"), Command?, Args (List<string>), Url?, Env (Dict<string,string>)
-// MemoryConfig has: SummarizationInterval (int, default 10), RecentInteractionsFetchLimit (int, default 5), DeduplicationThreshold (double, default 0.85), ArchivePath (string, default "~/.nexus/archive/"), CompressionEnabled (bool, default true), ArchiveThresholdDays (int, default 90)
+// ModelProviderConfig has: Provider, Model, Endpoint?, ApiKey?, ContextWindow (int, default 8192), MaxOutputTokens (int, default 2048)
+// MemoryConfig has: SummarizationInterval (int, default 10), RecentInteractionsFetchLimit (int, default 5), DeduplicationThreshold (double, default 0.85), ArchivePath (string, default "~/.nexus/archive/"), CompressionEnabled (bool, default true), ArchiveThresholdDays (int, default 90), ContextCompactionThreshold (double, default 0.80), CompactionKeepRecentMessages (int, default 4)
 ```
 
 ### Database

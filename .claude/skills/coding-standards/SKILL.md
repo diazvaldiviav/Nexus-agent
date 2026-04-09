@@ -1,4 +1,4 @@
-﻿# Skill: Coding Standards — Nexus Agent (.NET 9)
+﻿# Skill: Coding Standards — Nexus Agent (.NET 10)
 
 > Mandatory coding standards for all C# code in the Nexus Agent project. Load when writing any code.
 

@@ -21,6 +21,7 @@ public class AgentService : IAgentService
     private readonly IInteractionSummarizer _summarizer;
     private readonly IToolExecutor? _toolExecutor;
     private readonly IToolArgumentValidator? _argumentValidator;
+    private readonly ISchemaValidator? _schemaValidator;
     private readonly EntityResolver? _entityResolver;
     private readonly MemoryCompressor? _compressor;
     private readonly ContextWindowManager? _contextWindowManager;
@@ -40,6 +41,7 @@ public class AgentService : IAgentService
         IInteractionSummarizer summarizer,
         IToolExecutor? toolExecutor = null,
         IToolArgumentValidator? argumentValidator = null,
+        ISchemaValidator? schemaValidator = null,
         EntityResolver? entityResolver = null,
         MemoryCompressor? compressor = null,
         ContextWindowManager? contextWindowManager = null,
@@ -54,6 +56,7 @@ public class AgentService : IAgentService
         _summarizer = summarizer;
         _toolExecutor = toolExecutor;
         _argumentValidator = argumentValidator;
+        _schemaValidator = schemaValidator;
         _entityResolver = entityResolver;
         _compressor = compressor;
         _contextWindowManager = contextWindowManager;
@@ -407,8 +410,21 @@ public class AgentService : IAgentService
         if (_toolExecutor is null)
             return "Error: No tool executor available.";
 
-        // Semantic validation: normalize paths, check existence, fuzzy-correct
+        // Schema validation: check required args, coerce types, strip unknown
         var effectiveArguments = toolCall.Arguments;
+        if (_schemaValidator is not null && _config.Mcp.SchemaValidationEnabled)
+        {
+            var schemaResult = _schemaValidator.Validate(toolCall.Name, effectiveArguments);
+            if (!schemaResult.IsValid)
+            {
+                var errorMsg = string.Join("; ", schemaResult.Errors);
+                _logger?.LogWarning("[SchemaValidation] Tool '{Tool}' rejected: {Error}", toolCall.Name, errorMsg);
+                return $"[SchemaValidationError] {errorMsg}";
+            }
+            effectiveArguments = schemaResult.CoercedArgs;
+        }
+
+        // Semantic validation: normalize paths, check existence, fuzzy-correct
         if (_argumentValidator is not null)
         {
             var outcome = await _argumentValidator.ValidateAsync(
@@ -445,7 +461,10 @@ public class AgentService : IAgentService
         catch (KeyNotFoundException)
         {
             _logger?.LogWarning("Tool '{ToolName}' not found", toolCall.Name);
-            return $"Error: Tool '{toolCall.Name}' not found. Check the tool name and try again.";
+            var availableTools = _toolExecutor?.GetToolDefinitionsForPrompt();
+            if (string.IsNullOrEmpty(availableTools))
+                return $"[InvalidTool] Tool '{toolCall.Name}' is not registered. No tools are currently available — MCP server may be disconnected.";
+            return $"[InvalidTool] Tool '{toolCall.Name}' was not found. Please use one of the available tools:\n{availableTools}";
         }
         catch (Exception ex)
         {

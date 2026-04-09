@@ -12,8 +12,8 @@
 ## Project Structure
 - Solution: `NexusAgent.slnx`
 - 5 src projects: Nexus.Memory, Nexus.Core, Nexus.Connectors, Nexus.CLI, Nexus.Desktop
-- 3 test projects: Nexus.Memory.Tests (101 tests), Nexus.Core.Tests (51 tests), Nexus.Integration.Tests (23 tests)
-- Total: 175 tests, all passing
+- 3 test projects: Nexus.Memory.Tests (103 tests), Nexus.Core.Tests (153 tests, 1 pre-existing env-var failure), Nexus.Integration.Tests (23 tests)
+- Total: 279 tests; 1 pre-existing failure (GetApiKey_ReturnsNull_WhenNoKeyAvailable — GEMINI_API_KEY env var is set on this machine)
 
 ## Key Files
 - DI registration: `src/Nexus.Core/ServiceCollectionExtensions.cs`
@@ -27,6 +27,8 @@
 - MCP client manager: `src/Nexus.Connectors/McpClientManager.cs`
 - Tool registry: `src/Nexus.Connectors/ToolRegistry.cs`
 - MCP tool executor: `src/Nexus.Connectors/McpToolExecutor.cs`
+- Schema validator interface: `src/Nexus.Core/Abstractions/ISchemaValidator.cs`
+- Schema validator impl: `src/Nexus.Connectors/SchemaValidator.cs`
 
 ## Patterns Learned
 - Raw string literals with `$"""` cannot have `{{` literal braces. Use `$$"""` with `{{interpolation}}` instead.
@@ -35,6 +37,7 @@
 - `ILlmClient` uses `sp.GetService<>()` (nullable) not `sp.GetRequiredService<>()` to match nullable constructor.
 - MCP SDK v1.1.0: Uses `McpClient.CreateAsync()` (not McpClientFactory). `HttpClientTransport` with `HttpTransportMode.AutoDetect` for SSE/StreamableHttp. `StdioClientTransport` for stdio. `CallToolResult.IsError` is `bool?`. `EnvironmentVariables` is `IDictionary<string, string?>`.
 - Connectors -> Core dependency (one-way). McpServerEntry lives in Core Config. IToolExecutor lives in Core.
+- In C# switch expressions, `Array` is unreachable after `IList` because `Array` implements `IList`. Use only `IList` to match both arrays and lists.
 
 ## Sprint Progress
 - Sprint 1 Day 1: COMPLETE (embedding service)
@@ -44,3 +47,4 @@
 - Sprint 2 Day 3 (US-2.4 AC-1-4): COMPLETE (MCP SDK integration, IToolExecutor, McpClientManager rewrite, ToolRegistry update)
 - Sprint 3 Day 5 (US-3.2 AC-4,5,6,7,9): COMPLETE (CompressSummariesAsync, RelevanceDecay archival hook, AgentService background archival, CLI archive/compress commands, 7 new tests). 170 tests total.
 - Sprint 3 Day 6 (US-3.3 AC-1-7): COMPLETE (MCP persistence + CLI disconnect/servers commands, 5 new tests). 175 tests total.
+- Schema Validation (AC-1-6): COMPLETE (ISchemaValidator + SchemaValidator + AgentService integration + DI + config flags, 11 new tests). 186 tests total (excluding pre-existing env-var failure).

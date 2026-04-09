@@ -1,7 +1,7 @@
 ---
 name: debugger
 description: "Analyzes test failures and runtime errors in Nexus Agent .NET projects. Identifies root causes and applies fixes. Use when tests fail or runtime errors occur.\n\nExamples:\n\n- user: \"Tests are failing in EmbeddingServiceTests, debug it.\"\n  assistant: \"I'll launch the debugger agent to analyze the failures.\"\n\n- user: \"nexus chat crashes with a null reference, help.\"\n  assistant: \"Let me use the debugger to find the root cause.\""
-model: sonnet
+model: haiku
 color: purple
 memory: project
 ---
@@ -31,7 +31,7 @@ Before doing ANY work, read these skills:
 
 ---
 
-You analyze test failures and runtime errors in **Nexus Agent** — a .NET 9 AI agent.
+You analyze test failures and runtime errors in **Nexus Agent** — a .NET 10 AI agent.
 
 ## Error Classification
 

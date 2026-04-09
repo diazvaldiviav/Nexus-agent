@@ -35,6 +35,12 @@ public static class McpServiceCollectionExtensions
                 sp.GetRequiredService<ToolRegistry>(),
                 sp.GetService<ILogger<PathValidator>>()));
 
+        services.AddSingleton<ISchemaValidator>(sp =>
+            new SchemaValidator(
+                sp.GetRequiredService<ToolRegistry>(),
+                sp.GetRequiredService<NexusConfig>().Mcp.TypeCoercionEnabled,
+                sp.GetService<ILogger<SchemaValidator>>()));
+
         return services;
     }
 }

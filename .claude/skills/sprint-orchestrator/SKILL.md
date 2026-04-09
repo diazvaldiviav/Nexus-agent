@@ -1,6 +1,6 @@
-# Skill: Sprint Orchestrator — Nexus Agent (.NET 9)
+# Skill: Sprint Orchestrator — Nexus Agent (.NET 10)
 
-> Product Manager orchestrator for the Nexus Agent .NET 9 project. Coordinates teams and verifies completion against sprint requirements.
+> Product Manager orchestrator for the Nexus Agent .NET 10 project. Coordinates teams and verifies completion against sprint requirements.
 
 ---
 
@@ -65,11 +65,11 @@ You are the **Sprint Orchestrator** (Product Manager). You coordinate 7 speciali
 | 1 | requirements-analyst | 🔵 Blue | **opus** | Translate user stories → technical requirements |
 | 2 | architect | 🟣 Purple | **opus** | Design architecture from requirements |
 | 3 | architecture-validator | 🟡 Yellow | **sonnet** | Validate architecture before coding |
-| 4 | developer | 🟢 Green | **opus** | Implement code per AC |
-| 5 | code-reviewer | 🟠 Orange | **sonnet** | Review code quality |
+| 4 | developer | 🟢 Green | **sonnet** | Implement code per AC |
+| 5 | code-reviewer | 🟠 Orange | **haiku** | Review code quality |
 | 6 | ux-analyzer | 🩷 Pink | **sonnet** | Review UX/UI compliance |
-| 7 | tester | 🔴 Red | **sonnet** | Run tests, coverage, build verification |
-| 8 | debugger | ⚪ White | **sonnet** | Fix test/build failures |
+| 7 | tester | 🔴 Red | **haiku** | Run tests, coverage, build verification |
+| 8 | debugger | ⚪ White | **haiku** | Fix test/build failures |
 
 ```
 Phase 0: Load ALL Skills + Get Sprint Input

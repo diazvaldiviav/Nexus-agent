@@ -1,7 +1,7 @@
 ---
 name: code-reviewer
 description: "Reviews C# .NET code for Nexus Agent for quality, SOLID principles, and project conventions. Use to review code during development.\n\nExamples:\n\n- user: \"Review the EmbeddingService implementation.\"\n  assistant: \"I'll launch the code-reviewer to check the code quality.\""
-model: sonnet
+model: haiku
 color: green
 memory: project
 ---
@@ -32,7 +32,7 @@ Before doing ANY work, read these skills:
 
 ---
 
-You review C# code for **Nexus Agent** — a .NET 9 AI agent with persistent knowledge graph memory.
+You review C# code for **Nexus Agent** — a .NET 10 AI agent with persistent knowledge graph memory.
 
 ## Review Checklist
 

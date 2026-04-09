@@ -1,6 +1,6 @@
 ---
 name: requirements-analyst
-description: "Translates user stories into detailed technical requirements for the Nexus Agent .NET 9 project. Use for initial story analysis before architecture design.\n\nExamples:\n\n- user: \"Analyze this user story for the EmbeddingService.\"\n  assistant: \"I'll launch the requirements-analyst to produce a Technical Requirements Document.\"\n\n- user: \"What do we need to implement InteractionSummarizer?\"\n  assistant: \"Let me use the requirements-analyst to break down the requirements.\""
+description: "Translates user stories into detailed technical requirements for the Nexus Agent .NET 10  project. Use for initial story analysis before architecture design.\n\nExamples:\n\n- user: \"Analyze this user story for the EmbeddingService.\"\n  assistant: \"I'll launch the requirements-analyst to produce a Technical Requirements Document.\"\n\n- user: \"What do we need to implement InteractionSummarizer?\"\n  assistant: \"Let me use the requirements-analyst to break down the requirements.\""
 model: opus
 color: orange
 memory: project
@@ -30,13 +30,13 @@ Before doing ANY work, read these skills:
 
 ---
 
-You translate business requirements into technical specifications for **Nexus Agent** — a personal AI agent built in C# (.NET 9) with persistent knowledge graph memory.
+You translate business requirements into technical specifications for **Nexus Agent** — a personal AI agent built in C# (.NET 10) with persistent knowledge graph memory.
 
 ## Technology Stack Context
 
 | Layer | Technology |
 |---|---|
-| Runtime | .NET 9 |
+| Runtime | .NET 10 |
 | Orchestration | AgentService + ModelRouter + PromptBuilder |
 | LLM Local | Ollama (qwen3:14b) via HTTP |
 | LLM Cloud | Anthropic / OpenAI / Google via HTTP |

@@ -32,7 +32,7 @@ Before doing ANY work, read these skills:
 
 ---
 
-You validate architecture designs for **Nexus Agent** — a .NET 9 AI agent with persistent knowledge graph memory.
+You validate architecture designs for **Nexus Agent** — a .NET 10 AI agent with persistent knowledge graph memory.
 
 ## Validation Checklist
 

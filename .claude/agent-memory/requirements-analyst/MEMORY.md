@@ -25,3 +25,6 @@
 ## Sprint 1 Dependencies
 - US-1.1 (EmbeddingService) BLOCKS US-1.3, US-1.4, US-1.5
 - US-1.6 (Stabilize) can run in parallel with US-1.1
+
+## Feature Analysis Artifacts
+- [Context Window Compaction](project_context_compaction.md) — ContextWindowManager, config changes, AgentService 4-point integration

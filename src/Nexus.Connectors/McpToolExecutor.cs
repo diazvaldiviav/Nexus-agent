@@ -37,20 +37,30 @@ public class McpToolExecutor : IToolExecutor
         CancellationToken cancellationToken = default)
     {
         var resolvedServer = serverName;
+        var resolvedToolName = toolName;
 
-        // If serverName is empty, try to find the server from the registry
+        // If serverName is empty, resolve the tool from the registry (with fuzzy matching)
         if (string.IsNullOrEmpty(resolvedServer))
         {
-            resolvedServer = _toolRegistry.FindToolServer(toolName);
-            if (resolvedServer is null)
+            var resolution = _toolRegistry.ResolveTool(toolName);
+            if (resolution.Tool is null)
             {
-                return $"Error: Tool '{toolName}' is not registered with any server.";
+                return resolution.Error ?? $"Error: Tool '{toolName}' is not registered with any server.";
+            }
+
+            resolvedServer = resolution.Tool.ServerName;
+            resolvedToolName = resolution.CorrectedName ?? toolName;
+
+            if (resolution.CorrectedName is not null)
+            {
+                _logger?.LogInformation("Tool name resolved: '{Original}' -> '{Corrected}'",
+                    toolName, resolution.CorrectedName);
             }
         }
 
-        _logger?.LogInformation("Invoking tool {Tool} on server {Server}", toolName, resolvedServer);
+        _logger?.LogInformation("Invoking tool {Tool} on server {Server}", resolvedToolName, resolvedServer);
 
         return await _clientManager.InvokeToolAsync(
-            resolvedServer, toolName, parameters, cancellationToken).ConfigureAwait(false);
+            resolvedServer, resolvedToolName, parameters, cancellationToken).ConfigureAwait(false);
     }
 }
