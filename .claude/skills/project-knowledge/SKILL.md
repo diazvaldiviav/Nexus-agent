@@ -107,9 +107,10 @@ nexus-agent/
 │   │   │   ├── OllamaLlmClient.cs  # ILlmClient impl via Ollama HTTP
 │   │   │   └── LlmProviderFactory.cs
 │   │   ├── Services/            # Orchestration (Nexus.Core.Services)
-│   │   │   ├── AgentService.cs      # Main agent loop
+│   │   │   ├── AgentService.cs      # Main agent loop + output truncation + doom loop detection
 │   │   │   ├── ContextWindowManager.cs # Context window estimation + conversation compaction
 │   │   │   ├── ModelRouter.cs       # Local vs cloud selection
+│   │   │   ├── OutputTruncator.cs   # Static: head/tail line truncation + UTF-8 safe byte truncation (TruncatedOutput record)
 │   │   │   ├── PromptBuilder.cs     # Memory context + tool definitions
 │   │   │   └── ToolCallParser.cs    # [TOOL_CALL: {...}] parser
 │   │   ├── Models/              # POCOs (Nexus.Core.Models)
@@ -298,7 +299,7 @@ public class NexusConfig
 // ModelsConfig has: Local, Cloud, Routing, Gemini?, Anthropic?, OpenAi?
 // Per-provider keys: models.gemini.api_key, models.anthropic.api_key, models.openai.api_key
 // Resolved via ModelsConfig.GetApiKey("provider") — 3-tier fallback
-// McpConfig has: List<McpServerEntry> Servers, MaxToolCallIterations (int, default 3), ToolCallTimeoutSeconds (int, default 30), SchemaValidationEnabled (bool, default true), TypeCoercionEnabled (bool, default true)
+// McpConfig has: List<McpServerEntry> Servers, MaxToolCallIterations (int, default 3), ToolCallTimeoutSeconds (int, default 30), SchemaValidationEnabled (bool, default true), TypeCoercionEnabled (bool, default true), MaxOutputLines (int, default 200), MaxOutputBytes (int, default 32000)
 // McpServerEntry has: Name, Transport ("stdio"|"sse"), Command?, Args (List<string>), Url?, Env (Dict<string,string>)
 // ModelProviderConfig has: Provider, Model, Endpoint?, ApiKey?, ContextWindow (int, default 8192), MaxOutputTokens (int, default 2048)
 // MemoryConfig has: SummarizationInterval (int, default 10), RecentInteractionsFetchLimit (int, default 5), DeduplicationThreshold (double, default 0.85), ArchivePath (string, default "~/.nexus/archive/"), CompressionEnabled (bool, default true), ArchiveThresholdDays (int, default 90), ContextCompactionThreshold (double, default 0.80), CompactionKeepRecentMessages (int, default 4)

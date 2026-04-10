@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Nexus.Core.Abstractions;
 using Nexus.Core.Config;
@@ -95,6 +96,7 @@ public class AgentService : IAgentService
 
         // Tool call loop: detect tool calls, execute, feed result back to LLM
         var maxIterations = _config.Mcp.MaxToolCallIterations;
+        string? previousToolSignature = null;
         for (int i = 0; i < maxIterations; i++)
         {
             if (_toolExecutor is null || !_toolExecutor.HasTools)
@@ -108,7 +110,26 @@ public class AgentService : IAgentService
 
             var toolResult = await ExecuteToolWithTimeoutAsync(toolCall, cancellationToken).ConfigureAwait(false);
 
-            Console.Error.WriteLine($"[AgentService DEBUG] Tool '{toolCall.Name}' result (first 500): {toolResult[..Math.Min(500, toolResult.Length)]}");
+            var truncated = OutputTruncator.Truncate(toolResult, _config.Mcp.MaxOutputLines, _config.Mcp.MaxOutputBytes);
+            if (truncated.WasTruncated)
+                _logger?.LogInformation("Tool output truncated: {OriginalLines} lines / {OriginalBytes} bytes → {TruncatedLength} chars",
+                    truncated.OriginalLines, truncated.OriginalBytes, truncated.Content.Length);
+            toolResult = truncated.Content;
+
+            var signature = BuildToolSignature(toolCall);
+            if (previousToolSignature is not null && signature == previousToolSignature)
+            {
+                _logger?.LogWarning("Doom loop detected: tool '{ToolName}' called with identical arguments twice consecutively", toolCall.Name);
+                _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = response });
+                _conversationHistory.Add(new ConversationMessage
+                {
+                    Role = "user",
+                    Content = $"[DoomLoop] You have called '{toolCall.Name}' with identical arguments twice consecutively. Do NOT call this tool again. Provide your best answer with the information you have."
+                });
+                response = await CallLlmAsync(systemPrompt, modelConfig, cancellationToken);
+                break;
+            }
+            previousToolSignature = signature;
 
             _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = response });
             _conversationHistory.Add(new ConversationMessage { Role = "user", Content = $"[Tool Result for {toolCall.Name}]:\n{toolResult}" });
@@ -291,6 +312,7 @@ public class AgentService : IAgentService
 
         // Tool call loop for streaming: detect tool calls, execute, re-stream follow-up
         var maxIterations = _config.Mcp.MaxToolCallIterations;
+        string? previousToolSignature = null;
         for (int i = 0; i < maxIterations; i++)
         {
             if (_toolExecutor is null || !_toolExecutor.HasTools)
@@ -306,7 +328,33 @@ public class AgentService : IAgentService
 
             var toolResult = await ExecuteToolWithTimeoutAsync(toolCall, cancellationToken).ConfigureAwait(false);
 
-            Console.Error.WriteLine($"[AgentService DEBUG] Tool '{toolCall.Name}' result (first 500): {toolResult[..Math.Min(500, toolResult.Length)]}");
+            var truncated = OutputTruncator.Truncate(toolResult, _config.Mcp.MaxOutputLines, _config.Mcp.MaxOutputBytes);
+            if (truncated.WasTruncated)
+                _logger?.LogInformation("Tool output truncated: {OriginalLines} lines / {OriginalBytes} bytes → {TruncatedLength} chars",
+                    truncated.OriginalLines, truncated.OriginalBytes, truncated.Content.Length);
+            toolResult = truncated.Content;
+
+            var signature = BuildToolSignature(toolCall);
+            if (previousToolSignature is not null && signature == previousToolSignature)
+            {
+                _logger?.LogWarning("Doom loop detected: tool '{ToolName}' called with identical arguments twice consecutively", toolCall.Name);
+                _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = response });
+                _conversationHistory.Add(new ConversationMessage
+                {
+                    Role = "user",
+                    Content = $"[DoomLoop] You have called '{toolCall.Name}' with identical arguments twice consecutively. Do NOT call this tool again. Provide your best answer with the information you have."
+                });
+                fullResponse.Clear();
+                await foreach (var lastChanceToken in provider.ChatStreamAsync(
+                    systemPrompt, _conversationHistory, modelConfig.Model, cancellationToken))
+                {
+                    fullResponse.Append(lastChanceToken);
+                    yield return lastChanceToken;
+                }
+                response = fullResponse.ToString();
+                break;
+            }
+            previousToolSignature = signature;
 
             _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = response });
             _conversationHistory.Add(new ConversationMessage { Role = "user", Content = $"[Tool Result for {toolCall.Name}]:\n{toolResult}" });
@@ -471,6 +519,13 @@ public class AgentService : IAgentService
             _logger?.LogWarning(ex, "Tool '{ToolName}' execution failed", toolCall.Name);
             return $"Error executing tool '{toolCall.Name}': {ex.Message}";
         }
+    }
+
+    private static string BuildToolSignature(ToolCallRequest toolCall)
+    {
+        var args = JsonSerializer.Serialize(toolCall.Arguments ?? new Dictionary<string, object>());
+        var raw = $"{toolCall.Name}:{args}";
+        return raw.Length > 200 ? raw[..200] : raw;
     }
 
     private async Task<string> CallLlmAsync(

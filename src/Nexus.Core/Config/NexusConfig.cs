@@ -138,6 +138,8 @@ public class McpConfig
     public int ToolCallTimeoutSeconds { get; set; } = 30;
     public bool SchemaValidationEnabled { get; set; } = true;
     public bool TypeCoercionEnabled { get; set; } = true;
+    public int MaxOutputLines { get; set; } = 200;
+    public int MaxOutputBytes { get; set; } = 32000;
     public List<McpServerEntry> Servers { get; set; } = new();
 }
 
