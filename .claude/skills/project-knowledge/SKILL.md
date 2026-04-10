@@ -197,6 +197,27 @@ nexus-agent/
 │   │       ├── DxgiGpuProfiler.cs   # Internal sealed: IGpuProfiler via IDxgiAdapterProvider
 │   │       └── WindowsHostProfiler.cs # Public sealed: IHostProfiler compositor — concurrent CPU/RAM/GPU via Task.WhenAll, ProfileSafe<T> fallbacks, ClassifyArchitecture
 │   ├── Nexus.Models/            # LLM model domain (candidates, profiles, catalog)
+│   │   ├── Enums/               # Domain enums (Nexus.Models.Enums)
+│   │   │   ├── ModelFormat.cs       # GGUF, SafeTensors, ONNX, OllamaManaged
+│   │   │   ├── BackendRuntime.cs    # LlamaCpp, OllamaRuntime, OnnxRuntime
+│   │   │   ├── ModelTaskFit.cs      # Chat, Reasoning, Coding
+│   │   │   ├── CpuCostClass.cs      # Low, Medium, High, VeryHigh
+│   │   │   ├── GpuCostClass.cs      # None, Low, Medium, High
+│   │   │   ├── InferenceSpeedClass.cs # Fast, Moderate, Slow, VerySlow
+│   │   │   ├── QualityTier.cs       # Basic, Good, Strong, Premium
+│   │   │   ├── InteractionPreference.cs # LowLatency, Balanced, DeepReasoning, BatchProcessing
+│   │   │   ├── OutputPreference.cs  # MaxSpeed, Balanced, MaxQuality, MaxStability
+│   │   │   ├── PromptLength.cs      # Short, Medium, Long, VeryLong
+│   │   │   ├── ResponseLength.cs    # Short, Medium, Long, VeryLong
+│   │   │   ├── MultilingualRequirement.cs # None, Basic, Strong
+│   │   │   ├── DistributionSource.cs # [Flags] Ollama=1, HuggingFace=2
+│   │   │   ├── InstallComplexity.cs # Low, Medium, High
+│   │   │   └── CompatibleArchitecture.cs # x64, ARM64
+│   │   ├── ModelCandidate.cs      # 12-param record: primary model entity (Id, Family, Variant, Quantization, Format, params, size, context, backends, tasks, langs, DistributionProfile) + ToString()
+│   │   └── Profiles/             # Immutable profile records (Nexus.Models.Profiles)
+│   │       ├── DistributionProfile.cs  # 8-param record: download sources, tags, size, complexity
+│   │       ├── ModelExecutionProfile.cs # 10-param record: RAM/VRAM, cost classes, quality, runtime
+│   │       └── WorkloadIntentProfile.cs # 9-param record: intent, interaction/output prefs, prompt/response length, language, multilingual + static Default()
 │   ├── Nexus.Recommendation/   # Decision engine (gates, scoring, ranking)
 │   ├── Nexus.Distribution/     # Model download from sources
 │   ├── Nexus.ModelRegistry/    # Local installed model tracking
@@ -208,7 +229,7 @@ nexus-agent/
 │   ├── Nexus.Integration.Tests/ # End-to-end tests
 │   ├── Nexus.Desktop.Tests/     # Desktop ViewModel tests (Avalonia.Headless.XUnit)
 │   ├── Nexus.Hardware.Tests/    # Hardware tests: enums, envelopes, profile, classifier, WmiCpuProfiler, Win32RamProfiler, DxgiGpuProfiler, WindowsHostProfiler, LhmSensorMonitor, PerfCounterMonitor, DI registration [Trait("Category","Integration")], records (164 tests)
-│   └── Nexus.Models.Tests/      # Model domain tests
+│   └── Nexus.Models.Tests/      # Model domain tests: 15 enum tests, DistributionProfile (5), ModelExecutionProfile (4), ModelCandidate (7), WorkloadIntentProfile (7) — 38 tests
 │
 ├── docs/                        # Documentation
 │   ├── user-requirements.md
@@ -339,5 +360,6 @@ Grep: "class.*Service"              — Find existing services
 Namespace structure (Sprint 4 Day 6 reorg):
   Nexus.Core:    Abstractions/ Providers/ Services/ Models/ Config/
   Nexus.Memory:  Abstractions/ Embedding/ Graph/ Processing/ Infrastructure/ Models/
+  Nexus.Models:  Enums/ Profiles/
 Grep: "TODO|HACK|STUB"             — Find incomplete work
 ```
