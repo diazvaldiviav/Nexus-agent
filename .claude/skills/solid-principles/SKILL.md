@@ -1,4 +1,4 @@
-# Skill: SOLID Principles — Nexus Agent (.NET 9)
+# Skill: SOLID Principles — Nexus Agent (.NET 10)
 
 > SOLID principles applied to the Nexus Agent C# codebase. Review before any design or architectural decision.
 

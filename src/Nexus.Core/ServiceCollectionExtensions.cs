@@ -198,6 +198,7 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IInteractionSummarizer>(),
             sp.GetService<IToolExecutor>(),
             sp.GetService<IToolArgumentValidator>(),
+            sp.GetService<ISchemaValidator>(),
             sp.GetService<EntityResolver>(),
             sp.GetService<MemoryCompressor>(),
             sp.GetService<ContextWindowManager>(),

@@ -1,6 +1,6 @@
-# Skill: Sprint Orchestrator — Nexus Agent (.NET 9)
+# Skill: Sprint Orchestrator — Nexus Agent (.NET 10)
 
-> Product Manager orchestrator for the Nexus Agent .NET 9 project. Coordinates teams and verifies completion against sprint requirements.
+> Product Manager orchestrator for the Nexus Agent .NET 10 project. Coordinates teams and verifies completion against sprint requirements.
 
 ---
 

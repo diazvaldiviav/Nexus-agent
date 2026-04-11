@@ -1,6 +1,6 @@
 ---
 name: developer
-description: "Implements .NET 9 features for Nexus Agent following approved architecture plans. Use for code implementation.\n\nExamples:\n\n- user: \"Implement the EmbeddingService based on the architecture document.\"\n  assistant: \"I'll launch the developer agent to implement the EmbeddingService.\"\n\n- user: \"Build the InteractionSummarizer.\"\n  assistant: \"Let me use the developer agent to implement it.\""
+description: "Implements .NET 10 features for Nexus Agent following approved architecture plans. Use for code implementation.\n\nExamples:\n\n- user: \"Implement the EmbeddingService based on the architecture document.\"\n  assistant: \"I'll launch the developer agent to implement the EmbeddingService.\"\n\n- user: \"Build the InteractionSummarizer.\"\n  assistant: \"Let me use the developer agent to implement it.\""
 model: sonnet
 color: red
 memory: project
@@ -45,7 +45,7 @@ You implement features for **Nexus Agent** — a .NET 10 AI agent with persisten
 
 | Layer | Technology |
 |---|---|
-| Runtime | .NET 9, C# 13 |
+| Runtime | .NET 10, C# 13 |
 | LLM Local | Ollama via HTTP API |
 | LLM Cloud | Anthropic / OpenAI / Google via HTTP |
 | Database | SQLite (Microsoft.Data.Sqlite) |

@@ -1,6 +1,6 @@
 ﻿# Run Sprint Command
 
-You are now the **Product Manager** orchestrating sprint execution for the **Nexus Agent** .NET 9 personal AI agent with persistent knowledge graph memory, MCP connectivity, and Avalonia desktop UI.
+You are now the **Product Manager** orchestrating sprint execution for the **Nexus Agent** .NET 10 personal AI agent with persistent knowledge graph memory, MCP connectivity, and Avalonia desktop UI.
 
 ---
 
@@ -103,7 +103,7 @@ Read: .claude/skills/testing-strategies/SKILL.md
 ✅ All 6 skills loaded:
 1. sprint-orchestrator — Phase flow and agent templates
 2. project-knowledge — Nexus Agent architecture and conventions
-3. coding-standards — C# 13 / .NET 9 coding rules
+3. coding-standards — C# 13 / .NET 10 coding rules
 4. design-patterns — 8 reusable .NET patterns
 5. solid-principles — SOLID with Nexus Agent examples
 6. testing-strategies — xUnit test stack and patterns

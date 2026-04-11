@@ -76,6 +76,8 @@ memory:
 mcp:
   max_tool_call_iterations: 3      # Maximum LLM ↔ tool call round-trips per message (default: 3)
   tool_call_timeout_seconds: 30    # Timeout per individual tool call in seconds (default: 30)
+  max_output_lines: 200            # Max lines in tool output before head/tail truncation (default: 200)
+  max_output_bytes: 32000          # Max UTF-8 bytes in tool output before truncation (default: 32000)
   servers:
     # Example: stdio transport (most common — runs a local command)
     # - name: filesystem

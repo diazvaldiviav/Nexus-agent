@@ -175,6 +175,16 @@
 - Good: Console.IsInputRedirected guard at top of RunAsync; top-level catch returns default NexusConfig; RecommendChatModel/RecommendEmbeddingModel read POCO defaults not hardcoded strings; per-step typed catches; GenerateConfig omits cloud sections for skipped keys; ConfigLoader.Exists mirrors Load() search path; Phase 2 before Phase 3 prevents wizard on `nexus help`
 - Established: Spectre.Console Status() spinner inside internally-tested methods is a recurring anti-pattern — extract logic into pure helper, test the helper.
 
+## ContextWindowManager Review (2026-04-06)
+- Decision: APPROVED WITH SUGGESTIONS (2 MEDIUM, 3 LOW, 0 HIGH)
+- AC-1 through AC-6 all satisfied
+- MEDIUM-1: ContextWindowManager.cs:30 — `systemPrompt?.Length ?? 0` uses null-conditional on a non-nullable `string` param; remove guard or annotate as `string?`
+- MEDIUM-2: ContextWindowManager.cs:62 — magic string `"system"` role and `"[Conversation Summary]\n"` prefix hardcoded inline; no named constants
+- LOW-1: ContextWindowManagerTests.cs:97 — `Assert.Equal(5, ...)` assumes summarizer succeeds; depends on shared stub default, not per-test isolation
+- LOW-2: CompactIfNeededAsync returns `true` even when only truncation (no summary) occurs; semantics are correct but a comment would help
+- LOW-3: StubInteractionSummarizer throws synchronously (not via Task.FromException) — consistent with project pattern, acceptable
+- Good: ConfigureAwait(false) on all awaits; null guards in constructor; fallback-to-truncation pattern; 8 well-structured tests with clear AAA; StubKnowledgeGraph fully implements interface
+
 ## Sprint 1 Day 3 — E2EFlowTests / DIFactoryTests Review (2026-03-13)
 - Decision: APPROVED WITH SUGGESTIONS (3 MEDIUM, 3 LOW, 0 HIGH)
 - MEDIUM-1: E2EFlowTests.BugFix001 calls SqliteConnection.ClearAllPools() inside a test method — move to Dispose() only

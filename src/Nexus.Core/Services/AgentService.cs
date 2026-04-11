@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Nexus.Core.Abstractions;
 using Nexus.Core.Config;
@@ -21,6 +22,7 @@ public class AgentService : IAgentService
     private readonly IInteractionSummarizer _summarizer;
     private readonly IToolExecutor? _toolExecutor;
     private readonly IToolArgumentValidator? _argumentValidator;
+    private readonly ISchemaValidator? _schemaValidator;
     private readonly EntityResolver? _entityResolver;
     private readonly MemoryCompressor? _compressor;
     private readonly ContextWindowManager? _contextWindowManager;
@@ -40,6 +42,7 @@ public class AgentService : IAgentService
         IInteractionSummarizer summarizer,
         IToolExecutor? toolExecutor = null,
         IToolArgumentValidator? argumentValidator = null,
+        ISchemaValidator? schemaValidator = null,
         EntityResolver? entityResolver = null,
         MemoryCompressor? compressor = null,
         ContextWindowManager? contextWindowManager = null,
@@ -54,6 +57,7 @@ public class AgentService : IAgentService
         _summarizer = summarizer;
         _toolExecutor = toolExecutor;
         _argumentValidator = argumentValidator;
+        _schemaValidator = schemaValidator;
         _entityResolver = entityResolver;
         _compressor = compressor;
         _contextWindowManager = contextWindowManager;
@@ -92,6 +96,7 @@ public class AgentService : IAgentService
 
         // Tool call loop: detect tool calls, execute, feed result back to LLM
         var maxIterations = _config.Mcp.MaxToolCallIterations;
+        string? previousToolSignature = null;
         for (int i = 0; i < maxIterations; i++)
         {
             if (_toolExecutor is null || !_toolExecutor.HasTools)
@@ -105,7 +110,26 @@ public class AgentService : IAgentService
 
             var toolResult = await ExecuteToolWithTimeoutAsync(toolCall, cancellationToken).ConfigureAwait(false);
 
-            Console.Error.WriteLine($"[AgentService DEBUG] Tool '{toolCall.Name}' result (first 500): {toolResult[..Math.Min(500, toolResult.Length)]}");
+            var truncated = OutputTruncator.Truncate(toolResult, _config.Mcp.MaxOutputLines, _config.Mcp.MaxOutputBytes);
+            if (truncated.WasTruncated)
+                _logger?.LogInformation("Tool output truncated: {OriginalLines} lines / {OriginalBytes} bytes → {TruncatedLength} chars",
+                    truncated.OriginalLines, truncated.OriginalBytes, truncated.Content.Length);
+            toolResult = truncated.Content;
+
+            var signature = BuildToolSignature(toolCall);
+            if (previousToolSignature is not null && signature == previousToolSignature)
+            {
+                _logger?.LogWarning("Doom loop detected: tool '{ToolName}' called with identical arguments twice consecutively", toolCall.Name);
+                _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = response });
+                _conversationHistory.Add(new ConversationMessage
+                {
+                    Role = "user",
+                    Content = $"[DoomLoop] You have called '{toolCall.Name}' with identical arguments twice consecutively. Do NOT call this tool again. Provide your best answer with the information you have."
+                });
+                response = await CallLlmAsync(systemPrompt, modelConfig, cancellationToken);
+                break;
+            }
+            previousToolSignature = signature;
 
             _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = response });
             _conversationHistory.Add(new ConversationMessage { Role = "user", Content = $"[Tool Result for {toolCall.Name}]:\n{toolResult}" });
@@ -288,6 +312,7 @@ public class AgentService : IAgentService
 
         // Tool call loop for streaming: detect tool calls, execute, re-stream follow-up
         var maxIterations = _config.Mcp.MaxToolCallIterations;
+        string? previousToolSignature = null;
         for (int i = 0; i < maxIterations; i++)
         {
             if (_toolExecutor is null || !_toolExecutor.HasTools)
@@ -303,7 +328,33 @@ public class AgentService : IAgentService
 
             var toolResult = await ExecuteToolWithTimeoutAsync(toolCall, cancellationToken).ConfigureAwait(false);
 
-            Console.Error.WriteLine($"[AgentService DEBUG] Tool '{toolCall.Name}' result (first 500): {toolResult[..Math.Min(500, toolResult.Length)]}");
+            var truncated = OutputTruncator.Truncate(toolResult, _config.Mcp.MaxOutputLines, _config.Mcp.MaxOutputBytes);
+            if (truncated.WasTruncated)
+                _logger?.LogInformation("Tool output truncated: {OriginalLines} lines / {OriginalBytes} bytes → {TruncatedLength} chars",
+                    truncated.OriginalLines, truncated.OriginalBytes, truncated.Content.Length);
+            toolResult = truncated.Content;
+
+            var signature = BuildToolSignature(toolCall);
+            if (previousToolSignature is not null && signature == previousToolSignature)
+            {
+                _logger?.LogWarning("Doom loop detected: tool '{ToolName}' called with identical arguments twice consecutively", toolCall.Name);
+                _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = response });
+                _conversationHistory.Add(new ConversationMessage
+                {
+                    Role = "user",
+                    Content = $"[DoomLoop] You have called '{toolCall.Name}' with identical arguments twice consecutively. Do NOT call this tool again. Provide your best answer with the information you have."
+                });
+                fullResponse.Clear();
+                await foreach (var lastChanceToken in provider.ChatStreamAsync(
+                    systemPrompt, _conversationHistory, modelConfig.Model, cancellationToken))
+                {
+                    fullResponse.Append(lastChanceToken);
+                    yield return lastChanceToken;
+                }
+                response = fullResponse.ToString();
+                break;
+            }
+            previousToolSignature = signature;
 
             _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = response });
             _conversationHistory.Add(new ConversationMessage { Role = "user", Content = $"[Tool Result for {toolCall.Name}]:\n{toolResult}" });
@@ -407,8 +458,21 @@ public class AgentService : IAgentService
         if (_toolExecutor is null)
             return "Error: No tool executor available.";
 
-        // Semantic validation: normalize paths, check existence, fuzzy-correct
+        // Schema validation: check required args, coerce types, strip unknown
         var effectiveArguments = toolCall.Arguments;
+        if (_schemaValidator is not null && _config.Mcp.SchemaValidationEnabled)
+        {
+            var schemaResult = _schemaValidator.Validate(toolCall.Name, effectiveArguments);
+            if (!schemaResult.IsValid)
+            {
+                var errorMsg = string.Join("; ", schemaResult.Errors);
+                _logger?.LogWarning("[SchemaValidation] Tool '{Tool}' rejected: {Error}", toolCall.Name, errorMsg);
+                return $"[SchemaValidationError] {errorMsg}";
+            }
+            effectiveArguments = schemaResult.CoercedArgs;
+        }
+
+        // Semantic validation: normalize paths, check existence, fuzzy-correct
         if (_argumentValidator is not null)
         {
             var outcome = await _argumentValidator.ValidateAsync(
@@ -445,13 +509,23 @@ public class AgentService : IAgentService
         catch (KeyNotFoundException)
         {
             _logger?.LogWarning("Tool '{ToolName}' not found", toolCall.Name);
-            return $"Error: Tool '{toolCall.Name}' not found. Check the tool name and try again.";
+            var availableTools = _toolExecutor?.GetToolDefinitionsForPrompt();
+            if (string.IsNullOrEmpty(availableTools))
+                return $"[InvalidTool] Tool '{toolCall.Name}' is not registered. No tools are currently available — MCP server may be disconnected.";
+            return $"[InvalidTool] Tool '{toolCall.Name}' was not found. Please use one of the available tools:\n{availableTools}";
         }
         catch (Exception ex)
         {
             _logger?.LogWarning(ex, "Tool '{ToolName}' execution failed", toolCall.Name);
             return $"Error executing tool '{toolCall.Name}': {ex.Message}";
         }
+    }
+
+    private static string BuildToolSignature(ToolCallRequest toolCall)
+    {
+        var args = JsonSerializer.Serialize(toolCall.Arguments ?? new Dictionary<string, object>());
+        var raw = $"{toolCall.Name}:{args}";
+        return raw.Length > 200 ? raw[..200] : raw;
     }
 
     private async Task<string> CallLlmAsync(

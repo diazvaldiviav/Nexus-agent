@@ -286,6 +286,27 @@
   - Markdig added as NuGet dependency to Nexus.Desktop project
   - Build: 0 errors, 0 warnings
 
+- Context Window Compaction sprint complete: 364 tests total (103 Memory + 133 Core + 52 Integration + 76 Desktop)
+  - Added: 8 new tests in ContextWindowManagerTests.cs (Nexus.Core.Tests)
+    - EstimateTokens_ReturnsCharsDividedByFour (AC-3)
+    - CompactIfNeeded_BelowThreshold_ReturnsFalse (AC-3)
+    - CompactIfNeeded_AboveThreshold_CompactsHistory (AC-3/AC-6)
+    - CompactIfNeeded_KeepsRecentMessages (AC-3/AC-1)
+    - CompactIfNeeded_SummaryMessageFormat (AC-3)
+    - CompactIfNeeded_SummarizerFails_FallsBackToTruncation (AC-3 resilience)
+    - CompactIfNeeded_ReCompactsPreviousSummary (AC-3)
+    - CompactIfNeeded_TooFewMessages_ReturnsFalse (AC-3 edge case)
+  - New source files: src/Nexus.Core/Services/ContextWindowManager.cs
+  - Modified: NexusConfig.cs (MemoryConfig gains ContextCompactionThreshold + CompactionKeepRecentMessages), ModelProviderConfig gains ContextWindow + MaxOutputTokens
+  - Modified: AgentService.cs (ContextWindowManager? 12th param, CompactIfNeededAsync at 4 call sites: ChatAsync x2 + ChatStreamAsync x2)
+  - Modified: ServiceCollectionExtensions.cs (ContextWindowManager registered as singleton, passed as 12th arg to AgentService factory)
+  - Modified: nexus.yaml.example (context_window + max_output_tokens on local+cloud sections, context_compaction_threshold + compaction_keep_recent_messages in memory section)
+  - StubInteractionSummarizer + StubKnowledgeGraph defined inline in test class (not in Fakes/)
+  - ContextWindowManager injects IInteractionSummarizer + PromptBuilder + MemoryConfig (no ILogger required for tests)
+  - SummaryRole = "system", SummaryPrefix = "[Conversation Summary]\n" exposed as public constants
+  - Build: 0 errors, 0 warnings
+  - Format violations: ZERO new violations
+
 - Hardware Envelopes sprint complete: 338 tests total (103 Memory + 70 Core + 50 Integration + 76 Desktop + 38 Hardware + 1 Models)
   - Added: new Nexus.Hardware.Tests project with 38 tests
     - CpuEnvelopeTests x7, RamEnvelopeTests x7, GpuEnvelopeTests x9, HostCapabilityProfileTests x7, EnumTests x8

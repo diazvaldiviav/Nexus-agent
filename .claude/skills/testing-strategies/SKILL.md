@@ -1,4 +1,4 @@
-# Skill: Testing Strategies — Nexus Agent (.NET 9)
+# Skill: Testing Strategies — Nexus Agent (.NET 10)
 
 > Complete testing playbook for the Nexus Agent .NET application. Consult before writing any test.
 
