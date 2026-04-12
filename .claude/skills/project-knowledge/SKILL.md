@@ -217,7 +217,14 @@ nexus-agent/
 │   │   │   ├── DistributionSource.cs # [Flags] Ollama=1, HuggingFace=2
 │   │   │   ├── InstallComplexity.cs # Low, Medium, High
 │   │   │   └── CompatibleArchitecture.cs # x64, ARM64
+│   │   ├── ICuratedCatalog.cs      # Interface: Count, GetAllCandidates(), GetById(), GetByFamily(), GetByTaskFit()
+│   │   ├── CuratedCatalog.cs      # Sealed: loads embedded curated-catalog.json (20 models) via Assembly.GetManifestResourceStream, indexes by Id/Family/TaskFit, immutable/thread-safe
+│   │   ├── IModelNormalizer.cs     # Interface: Normalize(ModelCandidate) → ModelExecutionProfile
+│   │   ├── ModelNormalizer.cs     # Stateless normalizer: quantization→bpp mapping (20 entries), memory estimation (weight/RAM/KV/VRAM), cost/quality classifiers, arch/runtime determination. Internal static helpers via InternalsVisibleTo.
+│   │   ├── ModelServiceCollectionExtensions.cs # Public static: AddNexusModels() — registers ICuratedCatalog (Singleton) + IModelNormalizer (Singleton)
 │   │   ├── ModelCandidate.cs      # 12-param record: primary model entity (Id, Family, Variant, Quantization, Format, params, size, context, backends, tasks, langs, DistributionProfile) + ToString()
+│   │   ├── Data/
+│   │   │   └── curated-catalog.json # EmbeddedResource: 20 real LLM model entries (Qwen=7, Gemma=3, Phi=2, Llama=4, Mistral=1, DeepSeek=3), camelCase props, PascalCase enums
 │   │   └── Profiles/             # Immutable profile records (Nexus.Models.Profiles)
 │   │       ├── DistributionProfile.cs  # 8-param record: download sources, tags, size, complexity
 │   │       ├── ModelExecutionProfile.cs # 10-param record: RAM/VRAM, cost classes, quality, runtime
@@ -233,7 +240,7 @@ nexus-agent/
 │   ├── Nexus.Integration.Tests/ # End-to-end tests
 │   ├── Nexus.Desktop.Tests/     # Desktop ViewModel tests (Avalonia.Headless.XUnit)
 │   ├── Nexus.Hardware.Tests/    # Hardware tests: enums, envelopes, profile, classifier, WmiCpuProfiler, Win32RamProfiler, DxgiGpuProfiler, WindowsHostProfiler, LhmSensorMonitor, PerfCounterMonitor, DI registration [Trait("Category","Integration")], records (164 tests)
-│   └── Nexus.Models.Tests/      # Model domain tests: 15 enum tests, DistributionProfile (5), ModelExecutionProfile (4), ModelCandidate (7), WorkloadIntentProfile (7) — 38 tests
+│   └── Nexus.Models.Tests/      # Model domain tests: 15 enum tests, DistributionProfile (5), ModelExecutionProfile (4), ModelCandidate (7), WorkloadIntentProfile (7), ModelNormalizer (18), CuratedCatalog (15), DI registration (6) — 77 tests
 │
 ├── docs/                        # Documentation
 │   ├── user-requirements.md

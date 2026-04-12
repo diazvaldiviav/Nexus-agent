@@ -6,6 +6,8 @@ namespace Nexus.Models.Enums;
 [Flags]
 public enum DistributionSource
 {
+    /// <summary>Ollama model registry.</summary>
     Ollama = 1,
+    /// <summary>Hugging Face model hub.</summary>
     HuggingFace = 2
 }
