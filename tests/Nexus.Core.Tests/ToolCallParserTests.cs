@@ -470,4 +470,241 @@ public class ToolCallParserTests
         Assert.Equal("read_multiple_files", result.Name);
         Assert.Equal("[REPETITION_ERROR]", result.Arguments!["paths"]);
     }
+
+    // --- AC-1: Markdown fence stripping ---
+
+    [Fact]
+    public void TryParse_MarkdownJsonFence_ExtractsToolCall()
+    {
+        // Arrange: model wraps output in ```json ... ``` code fence
+        var response = "```json\n[TOOL_CALL: {\"name\": \"read_file\", \"arguments\": {\"path\": \"/tmp/test.txt\"}}]\n```";
+
+        // Act
+        var result = ToolCallParser.TryParse(response);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal("read_file", result.Name);
+        Assert.Equal("/tmp/test.txt", result.Arguments!["path"]);
+    }
+
+    [Fact]
+    public void TryParse_MarkdownPlainFence_ExtractsToolCall()
+    {
+        // Arrange: plain ``` fence without language tag
+        var response = "```\n[TOOL_CALL: {\"name\": \"list_tools\"}]\n```";
+
+        // Act
+        var result = ToolCallParser.TryParse(response);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal("list_tools", result.Name);
+    }
+
+    [Fact]
+    public void TryParse_MarkdownFenceWithSurroundingText_ExtractsToolCall()
+    {
+        // Arrange: text before and after the fence block
+        var response = "Sure, let me do that.\n```json\n[TOOL_CALL: {\"name\": \"write_file\", \"arguments\": {\"path\": \"/a.txt\", \"content\": \"hi\"}}]\n```\nDone!";
+
+        // Act
+        var result = ToolCallParser.TryParse(response);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal("write_file", result.Name);
+        Assert.Equal("/a.txt", result.Arguments!["path"]);
+    }
+
+    [Fact]
+    public void TryParse_NoFenceWithMarker_StillWorks()
+    {
+        // Regression: unfenced marker must still parse correctly after fence-stripping step
+        var response = """[TOOL_CALL: {"name": "ping", "arguments": {}}]""";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal("ping", result.Name);
+    }
+
+    // --- AC-2: XML-style <tool_call> marker ---
+
+    [Fact]
+    public void TryParse_XmlToolCallMarker_ExtractsToolCall()
+    {
+        // Arrange: lowercase XML tags
+        var response = "<tool_call>{\"name\": \"read_file\", \"arguments\": {\"path\": \"/etc/hosts\"}}</tool_call>";
+
+        // Act
+        var result = ToolCallParser.TryParse(response);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal("read_file", result.Name);
+        Assert.Equal("/etc/hosts", result.Arguments!["path"]);
+    }
+
+    [Fact]
+    public void TryParse_XmlToolCallMarkerUppercase_ExtractsToolCall()
+    {
+        // Arrange: UPPERCASE XML tags (case-insensitive matching required)
+        var response = "<TOOL_CALL>{\"name\": \"list_tools\"}</TOOL_CALL>";
+
+        // Act
+        var result = ToolCallParser.TryParse(response);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal("list_tools", result.Name);
+    }
+
+    [Fact]
+    public void TryParse_XmlToolCallNoClosingTag_ExtractsToolCall()
+    {
+        // Arrange: model drops the closing tag (best-effort extraction)
+        var response = "<tool_call>{\"name\": \"read_file\", \"arguments\": {\"path\": \"/tmp/x.txt\"}}";
+
+        // Act
+        var result = ToolCallParser.TryParse(response);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal("read_file", result.Name);
+        Assert.Equal("/tmp/x.txt", result.Arguments!["path"]);
+    }
+
+    // --- AC-3: Raw JSON fallback ---
+
+    [Fact]
+    public void TryParse_RawJsonWithName_ExtractsToolCall()
+    {
+        // Arrange: bare JSON object with no surrounding marker
+        var response = "{\"name\": \"read_file\", \"arguments\": {\"path\": \"/tmp/raw.txt\"}}";
+
+        // Act
+        var result = ToolCallParser.TryParse(response);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal("read_file", result.Name);
+        Assert.Equal("/tmp/raw.txt", result.Arguments!["path"]);
+    }
+
+    [Fact]
+    public void TryParse_RawJsonWithTextAround_ExtractsToolCall()
+    {
+        // Arrange: explanatory text surrounds the raw JSON
+        var response = "Sure! {\"name\": \"read_file\", \"arguments\": {\"path\": \"/tmp/raw.txt\"}} Done.";
+
+        // Act
+        var result = ToolCallParser.TryParse(response);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal("read_file", result.Name);
+        Assert.Equal("/tmp/raw.txt", result.Arguments!["path"]);
+    }
+
+    [Fact]
+    public void TryParse_RawJsonNoNameField_ReturnsNull()
+    {
+        // Arrange: JSON object without "name" must not be treated as a tool call
+        var response = "{\"foo\": \"bar\", \"count\": 42}";
+
+        // Act
+        var result = ToolCallParser.TryParse(response);
+
+        // Assert
+        Assert.Null(result);
+    }
+
+    // --- Priority / regression tests ---
+
+    [Fact]
+    public void TryParse_MarkerTakesPriorityOverRawJson()
+    {
+        // Arrange: both bracket marker and a raw JSON block are present — marker wins
+        var response = "[TOOL_CALL: {\"name\": \"marker_tool\", \"arguments\": {}}] and also {\"name\": \"raw_tool\", \"arguments\": {}}";
+
+        // Act
+        var result = ToolCallParser.TryParse(response);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal("marker_tool", result.Name);
+    }
+
+    [Fact]
+    public void TryParse_XmlTakesPriorityOverRawJson()
+    {
+        // Arrange: both XML tag and a raw JSON block are present — XML wins (path 2 > path 3)
+        var response = "<tool_call>{\"name\": \"xml_tool\", \"arguments\": {}}</tool_call> {\"name\": \"raw_tool\", \"arguments\": {}}";
+
+        // Act
+        var result = ToolCallParser.TryParse(response);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal("xml_tool", result.Name);
+    }
+
+    [Fact]
+    public void TryParse_AllThreePresent_MarkerWins()
+    {
+        // Arrange: all three formats present — bracket marker has highest priority
+        var response = "[TOOL_CALL: {\"name\": \"marker_tool\", \"arguments\": {}}] <tool_call>{\"name\": \"xml_tool\", \"arguments\": {}}</tool_call> {\"name\": \"raw_tool\", \"arguments\": {}}";
+
+        // Act
+        var result = ToolCallParser.TryParse(response);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal("marker_tool", result.Name);
+    }
+
+    [Fact]
+    public void StripMarkdownFences_UnterminatedFence_StripsPrefixOnly()
+    {
+        // Arrange: opening fence with no closing fence
+        var text = "```json\n[TOOL_CALL: {\"name\": \"read_file\"}]";
+
+        // Act
+        var result = ToolCallParser.StripMarkdownFences(text);
+
+        // Assert: content after the fence header line is returned (no closing fence to strip)
+        Assert.Contains("[TOOL_CALL:", result);
+        Assert.DoesNotContain("```", result);
+    }
+
+    // --- WalkJsonObject unit tests ---
+
+    [Fact]
+    public void WalkJsonObject_SimpleObject_ReturnsCorrectEndIndex()
+    {
+        // Arrange
+        var text = """{"name": "foo"}""";
+
+        // Act
+        var (endIndex, missingBraces) = ToolCallParser.WalkJsonObject(text, 0);
+
+        // Assert
+        Assert.Equal(text.Length - 1, endIndex);
+        Assert.Equal(0, missingBraces);
+    }
+
+    [Fact]
+    public void WalkJsonObject_UnclosedObject_ReturnsMissingBraceCount()
+    {
+        // Arrange: one closing brace is missing
+        var text = "{\"name\": \"foo\", \"arguments\": {\"path\": \"/x\"";
+
+        // Act
+        var (endIndex, missingBraces) = ToolCallParser.WalkJsonObject(text, 0);
+
+        // Assert
+        Assert.Equal(-1, endIndex);
+        Assert.True(missingBraces > 0);
+    }
 }

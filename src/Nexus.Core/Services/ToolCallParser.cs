@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Linq;
 using System.Text.Json;
 
@@ -10,7 +11,13 @@ public record ToolCallRequest(string Name, Dictionary<string, object>? Arguments
 
 /// <summary>
 /// Parses tool call markers from LLM responses using structural JSON extraction.
-/// Format: [TOOL_CALL: {"name": "tool_name", "arguments": {"param": "value"}}]
+///
+/// Supports three input formats in priority order:
+///   1. [TOOL_CALL: {...}]  — bracket marker (highest priority)
+///   2. &lt;tool_call&gt;{...}&lt;/tool_call&gt; — XML-style marker
+///   3. Raw JSON with a "name" property — fallback for models that output bare JSON
+///
+/// Markdown code fences (```json / ```) are stripped before parsing.
 ///
 /// Instead of regex, uses a brace-depth state machine that tracks string literals
 /// and escape sequences to extract the complete JSON object regardless of nested
@@ -19,6 +26,8 @@ public record ToolCallRequest(string Name, Dictionary<string, object>? Arguments
 public static class ToolCallParser
 {
     private const string Marker = "[TOOL_CALL:";
+    private const string XmlOpenTag = "<tool_call>";
+    private const string XmlCloseTag = "</tool_call>";
 
     /// <summary>
     /// Attempts to parse a tool call marker from the LLM response.
@@ -31,12 +40,31 @@ public static class ToolCallParser
 
         try
         {
-            var json = ExtractJsonBlock(llmResponse);
+            // Pre-process: strip markdown code fences that some models wrap around output
+            var processed = StripMarkdownFences(llmResponse);
+
+            // Path 1 (highest priority): bracket marker [TOOL_CALL: {...}]
+            string? json = ExtractJsonBlock(processed);
+
+            // Path 2: XML-style <tool_call>...</tool_call>
             if (json is null)
             {
-                var hasMarker = llmResponse.Contains("[TOOL_CALL:");
+                var xmlBlock = ExtractXmlToolCallBlock(processed);
+                if (xmlBlock is not null)
+                    json = xmlBlock;
+            }
+
+            // Path 3 (fallback): raw JSON object with a "name" property
+            if (json is null)
+            {
+                json = ExtractRawJsonBlock(processed);
+            }
+
+            if (json is null)
+            {
+                var hasMarker = processed.Contains("[TOOL_CALL:");
                 if (hasMarker)
-                    Console.Error.WriteLine($"[ToolCallParser DEBUG] Marker found but ExtractJsonBlock returned null. Response length: {llmResponse.Length}");
+                    Debug.WriteLine($"[ToolCallParser DEBUG] Marker found but ExtractJsonBlock returned null. Response length: {processed.Length}");
                 return null;
             }
 
@@ -69,29 +97,155 @@ public static class ToolCallParser
         }
         catch (JsonException ex)
         {
-            var extracted = ExtractJsonBlock(llmResponse);
+            var processed = StripMarkdownFences(llmResponse);
+            var extracted = ExtractJsonBlock(processed)
+                ?? ExtractXmlToolCallBlock(processed)
+                ?? ExtractRawJsonBlock(processed);
             var sanitized = extracted is not null ? SanitizeInvalidEscapes(extracted) : null;
-            System.Diagnostics.Debug.WriteLine($"[ToolCallParser] JSON parse failed: {ex.Message}");
-            System.Diagnostics.Debug.WriteLine($"[ToolCallParser] Extracted JSON (first 500 chars): {sanitized?[..Math.Min(500, sanitized.Length)]}");
-            Console.Error.WriteLine($"[ToolCallParser DEBUG] Parse failed: {ex.Message}");
-            Console.Error.WriteLine($"[ToolCallParser DEBUG] JSON (first 500): {sanitized?[..Math.Min(500, sanitized.Length)]}");
+            Debug.WriteLine($"[ToolCallParser] JSON parse failed: {ex.Message}");
+            Debug.WriteLine($"[ToolCallParser] Extracted JSON (first 500 chars): {sanitized?[..Math.Min(500, sanitized.Length)]}");
             return null;
         }
     }
 
     /// <summary>
     /// Returns the text before the first tool call marker, or the full text if no marker is found.
+    /// Detects the earliest of: bracket marker, XML open tag, or raw JSON start.
     /// </summary>
     public static string GetTextBeforeToolCall(string llmResponse)
     {
         if (string.IsNullOrEmpty(llmResponse))
             return llmResponse;
 
-        var markerIndex = llmResponse.IndexOf(Marker, StringComparison.Ordinal);
-        if (markerIndex < 0)
-            return llmResponse;
+        var processed = StripMarkdownFences(llmResponse);
 
-        return llmResponse[..markerIndex].TrimEnd();
+        var earliest = int.MaxValue;
+
+        var bracketIndex = processed.IndexOf(Marker, StringComparison.Ordinal);
+        if (bracketIndex >= 0 && bracketIndex < earliest)
+            earliest = bracketIndex;
+
+        var xmlIndex = processed.IndexOf(XmlOpenTag, StringComparison.OrdinalIgnoreCase);
+        if (xmlIndex >= 0 && xmlIndex < earliest)
+            earliest = xmlIndex;
+
+        var rawIndex = FindRawJsonStart(processed);
+        if (rawIndex >= 0 && rawIndex < earliest)
+            earliest = rawIndex;
+
+        if (earliest == int.MaxValue)
+            return processed;
+
+        return processed[..earliest].TrimEnd();
+    }
+
+    /// <summary>
+    /// Strips leading and trailing markdown code fences (``` or ```json / ```JSON etc.)
+    /// from the text so that the rest of the parser can work on the raw content.
+    /// Only strips when the text starts with a fence (possibly with leading whitespace).
+    /// </summary>
+    internal static string StripMarkdownFences(string text)
+    {
+        var trimmed = text.AsSpan().TrimStart();
+
+        // Must start with ```
+        if (!trimmed.StartsWith("```".AsSpan(), StringComparison.Ordinal))
+            return text;
+
+        var str = trimmed.ToString();
+
+        // Find end of the opening fence line (skip the ``` and optional language tag)
+        var openNewline = str.IndexOf('\n');
+        if (openNewline < 0)
+        {
+            // Unterminated fence with no newline — strip just the ``` prefix
+            return str[3..].TrimStart();
+        }
+
+        // Content starts after the opening fence line
+        var content = str[(openNewline + 1)..];
+
+        // Find closing ``` fence
+        var closeFenceIndex = content.LastIndexOf("```", StringComparison.Ordinal);
+        if (closeFenceIndex >= 0)
+        {
+            // Trim everything from the closing fence onward
+            content = content[..closeFenceIndex].TrimEnd();
+        }
+
+        return content;
+    }
+
+    /// <summary>
+    /// Extracts the JSON body from a &lt;tool_call&gt;...&lt;/tool_call&gt; block.
+    /// Tag matching is case-insensitive. If the closing tag is absent the content
+    /// from after the open tag to the end of text is returned (best-effort).
+    /// Returns null if no open tag is found.
+    /// </summary>
+    internal static string? ExtractXmlToolCallBlock(string text)
+    {
+        var openIndex = text.IndexOf(XmlOpenTag, StringComparison.OrdinalIgnoreCase);
+        if (openIndex < 0)
+            return null;
+
+        var contentStart = openIndex + XmlOpenTag.Length;
+
+        var closeIndex = text.IndexOf(XmlCloseTag, contentStart, StringComparison.OrdinalIgnoreCase);
+        if (closeIndex >= 0)
+            return text[contentStart..closeIndex].Trim();
+
+        // No closing tag — return from content start to end of text (best-effort)
+        return text[contentStart..].Trim();
+    }
+
+    /// <summary>
+    /// Extracts a raw JSON object that contains a "name" property (no surrounding marker).
+    /// Uses a brace-walk to find the complete object. Returns null if no qualifying
+    /// JSON object is found.
+    /// </summary>
+    internal static string? ExtractRawJsonBlock(string text)
+    {
+        var start = FindRawJsonStart(text);
+        if (start < 0)
+            return null;
+
+        var (endIndex, missingBraces) = WalkJsonObject(text, start);
+
+        if (endIndex >= 0)
+            return text[start..(endIndex + 1)];
+
+        // Incomplete — repair by appending missing braces
+        if (missingBraces > 0)
+        {
+            var partial = text[start..].TrimEnd();
+            if (partial.EndsWith(']'))
+                partial = partial[..^1].TrimEnd();
+            return partial + new string('}', missingBraces);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Finds the index of the first '{' that begins a JSON object containing a "name" property.
+    /// Scans forward looking for '{', then does a lightweight string search for '"name"' within
+    /// the object boundary (up to 512 chars ahead) without full parsing. Returns -1 if not found.
+    /// </summary>
+    private static int FindRawJsonStart(string text)
+    {
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (text[i] != '{')
+                continue;
+
+            // Lightweight check: look for "name" within a reasonable window
+            var window = Math.Min(512, text.Length - i);
+            var slice = text.AsSpan(i, window);
+            if (slice.Contains("\"name\"".AsSpan(), StringComparison.Ordinal))
+                return i;
+        }
+
+        return -1;
     }
 
     /// <summary>
@@ -118,13 +272,39 @@ public static class ToolCallParser
         if (openBrace < 0)
             return null;
 
-        // State machine: walk the JSON tracking brace depth inside/outside strings
+        var (endBrace, depth) = WalkJsonObject(text, openBrace);
+
+        if (endBrace >= 0)
+            return text[openBrace..(endBrace + 1)];
+
+        // LLM dropped closing brace(s) — repair by appending missing braces
+        if (depth > 0)
+        {
+            var partial = text[openBrace..];
+            // Trim any trailing ']' or whitespace the LLM may have added after the incomplete JSON
+            var trimmed = partial.TrimEnd();
+            if (trimmed.EndsWith(']'))
+                trimmed = trimmed[..^1].TrimEnd();
+
+            return trimmed + new string('}', depth);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Walks a JSON object starting at startIndex (which must be '{'), tracking brace depth
+    /// while respecting string literals and escape sequences.
+    /// Returns (endIndex, 0) when the closing brace is found, or (-1, missingBraces) when
+    /// the text ends before the object is closed (for repair by callers).
+    /// </summary>
+    internal static (int endIndex, int missingBraces) WalkJsonObject(string text, int startIndex)
+    {
         var depth = 0;
         var inString = false;
         var escape = false;
-        var endBrace = -1;
 
-        for (var i = openBrace; i < text.Length; i++)
+        for (var i = startIndex; i < text.Length; i++)
         {
             var c = text[i];
 
@@ -136,7 +316,6 @@ public static class ToolCallParser
                 if (i + 1 < text.Length && text[i + 1] == '"' && IsTrailingPathBackslash(text, i + 2))
                 {
                     // This \ is part of a Windows path, not a JSON escape
-                    // Skip it (don't set escape flag) — let the " close the string normally
                     continue;
                 }
 
@@ -156,32 +335,11 @@ public static class ToolCallParser
             {
                 depth--;
                 if (depth == 0)
-                {
-                    endBrace = i;
-                    break;
-                }
+                    return (i, 0);
             }
         }
 
-        if (endBrace >= 0)
-        {
-            // Complete JSON object found
-            return text[openBrace..(endBrace + 1)];
-        }
-
-        // LLM dropped closing brace(s) — repair by appending missing braces
-        if (depth > 0)
-        {
-            var partial = text[openBrace..];
-            // Trim any trailing ']' or whitespace the LLM may have added after the incomplete JSON
-            var trimmed = partial.TrimEnd();
-            if (trimmed.EndsWith(']'))
-                trimmed = trimmed[..^1].TrimEnd();
-
-            return trimmed + new string('}', depth);
-        }
-
-        return null;
+        return (-1, depth);
     }
 
     /// <summary>
@@ -312,17 +470,7 @@ public static class ToolCallParser
         if (ch is not ('}' or ']' or ','))
             return false;
 
-        // Extra check: a real escaped quote like \" in content is typically followed
-        // by more text. If the next non-whitespace after " is } ] or , AND
-        // there's no unmatched quote issue, this is likely a path trailing backslash.
-        // But we must exclude cases like: "content": "{\"a\": 1}"} where \" is real.
-        // Heuristic: if the character after the structural token is also structural or EOF,
-        // it's definitely a string close. If it's another quote (starting a new key),
-        // it could go either way. Check if there's a colon nearby (key: value pattern).
-        // Simplest reliable heuristic: check the char BEFORE the backslash.
-        // In a path, it's always a word char (letter, digit). In escaped content like
-        // {\"a\"}, the char before \ is { which is not a path char.
-        return true; // Let the structural check suffice — revisit if needed
+        return true; // Let the structural check suffice
     }
 
     /// <summary>
@@ -345,7 +493,7 @@ public static class ToolCallParser
 
         foreach (var key in keysToFix)
         {
-            Console.Error.WriteLine($"[ToolCallParser DEBUG] Repetition loop detected in '{key}', value truncated (was {((string)arguments[key]).Length} chars)");
+            Debug.WriteLine($"[ToolCallParser DEBUG] Repetition loop detected in '{key}', value truncated (was {((string)arguments[key]).Length} chars)");
             arguments[key] = "[REPETITION_ERROR]";
         }
     }

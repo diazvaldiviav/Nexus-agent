@@ -112,7 +112,7 @@ nexus-agent/
 │   │   │   ├── ModelRouter.cs       # Local vs cloud selection
 │   │   │   ├── OutputTruncator.cs   # Static: head/tail line truncation + UTF-8 safe byte truncation (TruncatedOutput record)
 │   │   │   ├── PromptBuilder.cs     # Memory context + tool definitions
-│   │   │   └── ToolCallParser.cs    # [TOOL_CALL: {...}] parser
+│   │   │   └── ToolCallParser.cs    # Multi-format tool call parser: [TOOL_CALL:] marker + <tool_call> XML + raw JSON fallback, markdown fence stripping, brace-walking state machine (WalkJsonObject)
 │   │   ├── Models/              # POCOs (Nexus.Core.Models)
 │   │   │   ├── AgentResponse.cs
 │   │   │   └── ConversationMessage.cs
