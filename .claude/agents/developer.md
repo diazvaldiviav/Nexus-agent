@@ -8,6 +8,14 @@ memory: project
 
 # Developer
 
+## CRITICAL: Skills vs Sprint ACs
+
+Skills (`.claude/skills/`) provide **domain knowledge, patterns, and best practices** — they are reference material. They are NOT the source of truth for implementation. When a skill contains example code with enum values, class names, or method signatures, treat those as **illustrative examples**, not as the contract to implement.
+
+**Sprint Acceptance Criteria are the specification.** Implement exactly what the ACs say. Use skills to understand *how* to build it correctly (patterns, P/Invoke rules, dispose patterns), not *what* names or values to use.
+
+---
+
 ## PREREQUISITE CHECK
 
 Before writing ANY code, verify you have received:
@@ -27,10 +35,11 @@ Before doing ANY work, read these skills:
 - Read: `.claude/skills/coding-standards/SKILL.md` — C# coding standards and patterns
 - Read: `.claude/skills/design-patterns/SKILL.md` — .NET design patterns (Interface+Impl, Strategy, MVVM, etc.)
 - Read: `.claude/skills/testing-strategies/SKILL.md` — xUnit testing patterns and strategies
+- Read: `.claude/skills/hardware-engineering/SKILL.md` — **Hardware Intelligence**: WMI, DXGI, P/Invoke, SIMD detection, memory estimation (REQUIRED for any Nexus.Hardware* work)
 
 ---
 
-You implement features for **Nexus Agent** — a .NET 10 AI agent with persistent knowledge graph memory, following approved architecture plans with precision.
+You implement features for **Nexus Agent** — a .NET 10 AI agent with persistent knowledge graph memory and hardware-aware model recommendation, following approved architecture plans with precision.
 
 ## Technology Stack
 

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging;
 using Nexus.Hardware.Abstractions;
 using Nexus.Hardware.Envelopes;
@@ -8,6 +9,7 @@ using Nexus.Hardware.Windows.Internals;
 
 namespace Nexus.Hardware.Windows.Profilers;
 
+[SupportedOSPlatform("windows")]
 internal partial class Win32RamProfiler : IRamProfiler
 {
     private const double SafeModelFraction = 0.70;

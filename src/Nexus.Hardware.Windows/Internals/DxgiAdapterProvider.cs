@@ -1,7 +1,9 @@
+using System.Runtime.Versioning;
 using Vortice.DXGI;
 
 namespace Nexus.Hardware.Windows.Internals;
 
+[SupportedOSPlatform("windows")]
 internal sealed class DxgiAdapterProvider : IDxgiAdapterProvider
 {
     public IReadOnlyList<DxgiAdapterInfo> GetAdapters()
@@ -38,8 +40,8 @@ internal sealed class DxgiAdapterProvider : IDxgiAdapterProvider
                 adapters.Add(new DxgiAdapterInfo(
                     desc.Description,
                     desc.VendorId,
-                    (long)desc.DedicatedVideoMemory,
-                    (long)desc.SharedSystemMemory,
+                    (long)(nuint)desc.DedicatedVideoMemory,
+                    (long)(nuint)desc.SharedSystemMemory,
                     localBudget,
                     localUsage,
                     IsHardware: true));

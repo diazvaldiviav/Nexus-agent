@@ -179,18 +179,56 @@ nexus-agent/
 │   │   └── HostStateClassifier.cs   # Static classifier: ClassifyCpu/Ram/Gpu → state enums via thresholds
 │   │
 │   ├── Nexus.Hardware.Windows/  # Windows-specific hardware detection (WMI, DXGI, P/Invoke)
+│   │   ├── HardwareServiceCollectionExtensions.cs # Public static: AddNexusHardwareWindows() — registers 10 services (4 infra + 3 profilers + 1 composite + 2 monitors)
 │   │   ├── Internals/           # Internal abstractions (Nexus.Hardware.Windows.Internals)
 │   │   │   ├── IWmiQuery.cs         # Internal interface: Query(string wql) → IReadOnlyList<IReadOnlyDictionary>
 │   │   │   ├── WmiQueryService.cs   # Internal sealed: ManagementObjectSearcher with COM disposal
 │   │   │   ├── IDxgiAdapterProvider.cs # Internal interface: GetAdapters() → IReadOnlyList<DxgiAdapterInfo>
 │   │   │   ├── DxgiAdapterProvider.cs # Internal sealed: IDxgiAdapterProvider impl via Vortice.DXGI COM interop
 │   │   │   ├── DxgiAdapterInfo.cs   # Internal record: 7 fields (Description, VendorId, Memory, etc.)
-│   │   │   └── MemoryStatusResult.cs # Internal record: 5 fields (MemoryLoad, Physical, PageFile)
+│   │   │   ├── MemoryStatusResult.cs # Internal record: 5 fields (MemoryLoad, Physical, PageFile)
+│   │   │   ├── LhmSensorReading.cs  # Internal record struct + LhmHardwareType/LhmSensorType enums
+│   │   │   ├── ILhmComputer.cs      # Internal interface: TryOpen() + ReadSensors() → IReadOnlyList<LhmSensorReading>
+│   │   │   ├── LhmComputerWrapper.cs # Internal sealed: ILhmComputer impl via LibreHardwareMonitor (CPU+GPU sensors, not RAM)
+│   │   │   ├── IPerfCounterProvider.cs # Internal interface: ReadCpuUsage/ReadAvailableRamMb/ReadPagesPerSecond + IDisposable
+│   │   │   └── PerfCounterProvider.cs # Internal sealed: IPerfCounterProvider impl via System.Diagnostics.PerformanceCounter
+│   │   ├── Monitoring/          # Runtime monitoring implementations (Nexus.Hardware.Windows.Monitoring)
+│   │   │   ├── LhmSensorMonitor.cs  # Internal sealed: ISensorMonitor + IDisposable via ILhmComputer (Task.Run for 10-50ms LHM reads)
+│   │   │   └── PerfCounterMonitor.cs # Internal sealed: IDisposable, synchronous ReadSnapshot() → SystemHealthSnapshot
 │   │   └── Profilers/           # Hardware profiler implementations (Nexus.Hardware.Windows.Profilers)
 │   │       ├── WmiCpuProfiler.cs    # Internal sealed: ICpuProfiler via WMI + SIMD intrinsics
 │   │       ├── Win32RamProfiler.cs  # Internal partial: IRamProfiler via P/Invoke GlobalMemoryStatusEx
-│   │       └��─ DxgiGpuProfiler.cs   # Internal sealed: IGpuProfiler via IDxgiAdapterProvider
+│   │       ├── DxgiGpuProfiler.cs   # Internal sealed: IGpuProfiler via IDxgiAdapterProvider
+│   │       └── WindowsHostProfiler.cs # Public sealed: IHostProfiler compositor — concurrent CPU/RAM/GPU via Task.WhenAll, ProfileSafe<T> fallbacks, ClassifyArchitecture
 │   ├── Nexus.Models/            # LLM model domain (candidates, profiles, catalog)
+│   │   ├── Enums/               # Domain enums (Nexus.Models.Enums)
+│   │   │   ├── ModelFormat.cs       # GGUF, SafeTensors, ONNX, OllamaManaged
+│   │   │   ├── BackendRuntime.cs    # LlamaCpp, OllamaRuntime, OnnxRuntime
+│   │   │   ├── ModelTaskFit.cs      # Chat, Reasoning, Coding
+│   │   │   ├── CpuCostClass.cs      # Low, Medium, High, VeryHigh
+│   │   │   ├── GpuCostClass.cs      # None, Low, Medium, High
+│   │   │   ├── InferenceSpeedClass.cs # Fast, Moderate, Slow, VerySlow
+│   │   │   ├── QualityTier.cs       # Basic, Good, Strong, Premium
+│   │   │   ├── InteractionPreference.cs # LowLatency, Balanced, DeepReasoning, BatchProcessing
+│   │   │   ├── OutputPreference.cs  # MaxSpeed, Balanced, MaxQuality, MaxStability
+│   │   │   ├── PromptLength.cs      # Short, Medium, Long, VeryLong
+│   │   │   ├── ResponseLength.cs    # Short, Medium, Long, VeryLong
+│   │   │   ├── MultilingualRequirement.cs # None, Basic, Strong
+│   │   │   ├── DistributionSource.cs # [Flags] Ollama=1, HuggingFace=2
+│   │   │   ├── InstallComplexity.cs # Low, Medium, High
+│   │   │   └── CompatibleArchitecture.cs # x64, ARM64
+│   │   ├── ICuratedCatalog.cs      # Interface: Count, GetAllCandidates(), GetById(), GetByFamily(), GetByTaskFit()
+│   │   ├── CuratedCatalog.cs      # Sealed: loads embedded curated-catalog.json (20 models) via Assembly.GetManifestResourceStream, indexes by Id/Family/TaskFit, immutable/thread-safe
+│   │   ├── IModelNormalizer.cs     # Interface: Normalize(ModelCandidate) → ModelExecutionProfile
+│   │   ├── ModelNormalizer.cs     # Stateless normalizer: quantization→bpp mapping (20 entries), memory estimation (weight/RAM/KV/VRAM), cost/quality classifiers, arch/runtime determination. Internal static helpers via InternalsVisibleTo.
+│   │   ├── ModelServiceCollectionExtensions.cs # Public static: AddNexusModels() — registers ICuratedCatalog (Singleton) + IModelNormalizer (Singleton)
+│   │   ├── ModelCandidate.cs      # 12-param record: primary model entity (Id, Family, Variant, Quantization, Format, params, size, context, backends, tasks, langs, DistributionProfile) + ToString()
+│   │   ├── Data/
+│   │   │   └── curated-catalog.json # EmbeddedResource: 20 real LLM model entries (Qwen=7, Gemma=3, Phi=2, Llama=4, Mistral=1, DeepSeek=3), camelCase props, PascalCase enums
+│   │   └── Profiles/             # Immutable profile records (Nexus.Models.Profiles)
+│   │       ├── DistributionProfile.cs  # 8-param record: download sources, tags, size, complexity
+│   │       ├── ModelExecutionProfile.cs # 10-param record: RAM/VRAM, cost classes, quality, runtime
+│   │       └── WorkloadIntentProfile.cs # 9-param record: intent, interaction/output prefs, prompt/response length, language, multilingual + static Default()
 │   ├── Nexus.Recommendation/   # Decision engine (gates, scoring, ranking)
 │   ├── Nexus.Distribution/     # Model download from sources
 │   ├── Nexus.ModelRegistry/    # Local installed model tracking
@@ -201,8 +239,8 @@ nexus-agent/
 │   ├── Nexus.Core.Tests/        # Core orchestration tests
 │   ├── Nexus.Integration.Tests/ # End-to-end tests
 │   ├── Nexus.Desktop.Tests/     # Desktop ViewModel tests (Avalonia.Headless.XUnit)
-│   ├── Nexus.Hardware.Tests/    # Hardware tests: enums, envelopes, profile, classifier, WmiCpuProfiler, Win32RamProfiler, records (101 tests)
-│   └── Nexus.Models.Tests/      # Model domain tests
+│   ├── Nexus.Hardware.Tests/    # Hardware tests: enums, envelopes, profile, classifier, WmiCpuProfiler, Win32RamProfiler, DxgiGpuProfiler, WindowsHostProfiler, LhmSensorMonitor, PerfCounterMonitor, DI registration [Trait("Category","Integration")], records (164 tests)
+│   └── Nexus.Models.Tests/      # Model domain tests: 15 enum tests, DistributionProfile (5), ModelExecutionProfile (4), ModelCandidate (7), WorkloadIntentProfile (7), ModelNormalizer (18), CuratedCatalog (15), DI registration (6) — 77 tests
 │
 ├── docs/                        # Documentation
 │   ├── user-requirements.md
@@ -343,5 +381,6 @@ Grep: "class.*Service"              — Find existing services
 Namespace structure (Sprint 4 Day 6 reorg):
   Nexus.Core:    Abstractions/ Providers/ Services/ Models/ Config/
   Nexus.Memory:  Abstractions/ Embedding/ Graph/ Processing/ Infrastructure/ Models/
+  Nexus.Models:  Enums/ Profiles/
 Grep: "TODO|HACK|STUB"             — Find incomplete work
 ```

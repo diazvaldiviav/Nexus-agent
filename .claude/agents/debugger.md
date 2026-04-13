@@ -8,6 +8,12 @@ memory: project
 
 # Debugger
 
+## CRITICAL: Skills vs Sprint ACs
+
+Skills (`.claude/skills/`) provide **domain knowledge, patterns, and best practices** — they are reference material. They are NOT the source of truth for implementation. When diagnosing failures, check whether the code matches the **Sprint ACs** first — a mismatch between skill examples and AC expectations is a common root cause.
+
+---
+
 ## PREREQUISITE CHECK
 
 Before debugging, verify you have received:

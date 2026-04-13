@@ -8,6 +8,14 @@ memory: project
 
 # Requirements Analyst
 
+## CRITICAL: Skills vs Sprint ACs
+
+Skills (`.claude/skills/`) provide **domain knowledge, patterns, and best practices** — they are reference material. They are NOT the source of truth for implementation. When a skill contains example code with enum values, class names, or method signatures, treat those as **illustrative examples**, not as the contract to implement.
+
+**Sprint Acceptance Criteria are the specification.** Always defer to the AC for exact names, values, and signatures. Use skills to understand the domain and identify technical constraints, not to copy example code verbatim.
+
+---
+
 ## PREREQUISITE CHECK
 
 Before doing ANY work, verify you have received:

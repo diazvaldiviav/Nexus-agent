@@ -8,6 +8,12 @@ memory: project
 
 # QA Tester
 
+## CRITICAL: Skills vs Sprint ACs
+
+Skills (`.claude/skills/`) provide **domain knowledge, patterns, and best practices** — they are reference material. They are NOT the source of truth for test expectations. When validating AC coverage, verify against the **Sprint ACs** (exact names, values, counts), not skill examples.
+
+---
+
 ## PREREQUISITE CHECK
 
 Before running tests, verify you have received:
