@@ -1,5 +1,6 @@
 using Nexus.Connectors;
 using Nexus.Core.Config;
+using Nexus.Integration.Tests.Fakes;
 
 namespace Nexus.Integration.Tests;
 
@@ -65,33 +66,4 @@ public class McpLifecycleServiceTests
         Assert.NotNull(result.ErrorMessage);
     }
 
-    private sealed class FakeMcpClientManager : IMcpClientManager
-    {
-        public bool ConnectResult { get; set; }
-        public bool ThrowOnConnect { get; set; }
-        public List<ToolDefinition> DiscoveredTools { get; set; } = new();
-        private readonly Dictionary<string, bool> _status = new(StringComparer.OrdinalIgnoreCase);
-
-        public Task<bool> ConnectAsync(McpServerEntry serverEntry, CancellationToken ct = default)
-        {
-            if (ThrowOnConnect)
-                throw new InvalidOperationException("connect error");
-
-            if (ConnectResult)
-                _status[serverEntry.Name] = true;
-
-            return Task.FromResult(ConnectResult);
-        }
-
-        public Task DisconnectAsync(string serverName, CancellationToken ct = default)
-        {
-            _status.Remove(serverName);
-            return Task.CompletedTask;
-        }
-
-        public Task<List<ToolDefinition>> DiscoverToolsAsync(string serverName, CancellationToken ct = default)
-            => Task.FromResult(DiscoveredTools.ToList());
-
-        public IReadOnlyDictionary<string, bool> GetServerStatus() => _status;
-    }
 }

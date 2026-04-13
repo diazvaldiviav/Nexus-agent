@@ -13,6 +13,7 @@ public interface IMcpClientManager
     Task DisconnectAsync(string serverName, CancellationToken ct = default);
     Task<List<ToolDefinition>> DiscoverToolsAsync(string serverName, CancellationToken ct = default);
     IReadOnlyDictionary<string, bool> GetServerStatus();
+    Task<string> InvokeToolAsync(string serverName, string toolName, Dictionary<string, object>? parameters = null, CancellationToken ct = default);
 }
 
 /// <summary>

@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using Nexus.Connectors;
 using Nexus.Core;
 using Nexus.Core.Abstractions;
 using Nexus.Core.Models;
@@ -54,7 +55,8 @@ public class McpToolCallLoopTests : IAsyncLifetime
         Func<string, string> responseFactory,
         IToolExecutor? toolExecutor = null,
         string providerName = "ollama",
-        NexusConfig? config = null)
+        NexusConfig? config = null,
+        ISchemaValidator? schemaValidator = null)
     {
         config ??= new NexusConfig();
         var search = new SemanticSearch(_connectionString);
@@ -66,7 +68,8 @@ public class McpToolCallLoopTests : IAsyncLifetime
         var fakeProvider = new FakeLlmProvider(providerName, responseFactory);
         var providerFactory = new LlmProviderFactory(new ILlmProvider[] { fakeProvider });
         var agent = new AgentService(config, _graph, promptBuilder, modelRouter,
-            entityExtractor, providerFactory, summarizer, toolExecutor);
+            entityExtractor, providerFactory, summarizer, toolExecutor,
+            schemaValidator: schemaValidator);
         _lastAgent = agent;
         return agent;
     }
@@ -212,6 +215,220 @@ public class McpToolCallLoopTests : IAsyncLifetime
 
         // Assert: response contains the configured timeout value
         Assert.Contains($"timed out after {config.Mcp.ToolCallTimeoutSeconds} seconds", response.Content);
+    }
+
+    [Fact]
+    public async Task ChatAsync_SchemaValidationEnabled_RejectingValidator_ReturnsSchemaError()
+    {
+        // Arrange: LLM returns a tool call; schema validator rejects it
+        var toolInvoked = false;
+        var fakeToolExecutor = new FakeToolExecutor((_, _, _) =>
+        {
+            toolInvoked = true;
+            return "should not reach here";
+        });
+
+        var config = new NexusConfig();
+        config.Mcp.SchemaValidationEnabled = true;
+
+        var callCount = 0;
+        var agent = CreateAgent(
+            lastUserMessage =>
+            {
+                callCount++;
+                if (!lastUserMessage.Contains("[Tool Result"))
+                    return """[TOOL_CALL: {"name": "my_tool", "arguments": {}}]""";
+                return "Schema validation failed, I cannot execute that tool.";
+            },
+            fakeToolExecutor,
+            config: config,
+            schemaValidator: new RejectingSchemaValidator());
+
+        // Act
+        var response = await agent.ChatAsync("Do something");
+
+        // Assert: tool was NOT invoked; error fed back to LLM
+        Assert.False(toolInvoked);
+        Assert.Equal(2, callCount);
+        Assert.Contains("Schema validation failed", response.Content);
+    }
+
+    [Fact]
+    public async Task ChatStreamAsync_SchemaValidationEnabled_RejectingValidator_ReturnsSchemaError()
+    {
+        // Arrange: streaming variant of sync schema validation test
+        var toolInvoked = false;
+        var fakeToolExecutor = new FakeToolExecutor((_, _, _) =>
+        {
+            toolInvoked = true;
+            return "should not reach here";
+        });
+
+        var config = new NexusConfig();
+        config.Mcp.SchemaValidationEnabled = true;
+
+        var callCount = 0;
+        var agent = CreateAgent(
+            lastUserMessage =>
+            {
+                callCount++;
+                if (!lastUserMessage.Contains("[Tool Result"))
+                    return """[TOOL_CALL: {"name": "my_tool", "arguments": {}}]""";
+                return "Schema validation failed, I cannot execute that tool.";
+            },
+            fakeToolExecutor,
+            config: config,
+            schemaValidator: new RejectingSchemaValidator());
+
+        // Act: collect streamed tokens
+        var tokens = new List<string>();
+        await foreach (var token in agent.ChatStreamAsync("Do something"))
+        {
+            tokens.Add(token);
+        }
+        var fullOutput = string.Join("", tokens);
+
+        // Assert: tool was NOT invoked; error fed back to LLM
+        Assert.False(toolInvoked);
+        Assert.Equal(2, callCount);
+        Assert.Contains("Schema validation failed", fullOutput);
+    }
+
+    [Fact]
+    public async Task ChatAsync_SchemaValidationDisabled_RejectingValidator_BypassesValidation()
+    {
+        // Arrange: schema validation disabled; RejectingSchemaValidator should be ignored
+        var toolInvoked = false;
+        var fakeToolExecutor = new FakeToolExecutor((_, _, _) =>
+        {
+            toolInvoked = true;
+            return "tool executed successfully";
+        });
+
+        var config = new NexusConfig();
+        config.Mcp.SchemaValidationEnabled = false;
+
+        var callCount = 0;
+        var agent = CreateAgent(
+            lastUserMessage =>
+            {
+                callCount++;
+                if (!lastUserMessage.Contains("[Tool Result"))
+                    return """[TOOL_CALL: {"name": "my_tool", "arguments": {}}]""";
+                return "Tool executed without schema validation.";
+            },
+            fakeToolExecutor,
+            config: config,
+            schemaValidator: new RejectingSchemaValidator());
+
+        // Act
+        var response = await agent.ChatAsync("Do something");
+
+        // Assert: tool WAS invoked because validation was disabled
+        Assert.True(toolInvoked);
+        Assert.Equal(2, callCount);
+        Assert.Contains("without schema validation", response.Content);
+    }
+
+    [Fact]
+    public async Task ChatAsync_SchemaValidationEnabled_PassthroughValidator_ExecutesTool()
+    {
+        // Arrange: schema validation enabled; PassthroughSchemaValidator always passes
+        var toolInvoked = false;
+        var fakeToolExecutor = new FakeToolExecutor((_, _, _) =>
+        {
+            toolInvoked = true;
+            return "tool result from passthrough";
+        });
+
+        var config = new NexusConfig();
+        config.Mcp.SchemaValidationEnabled = true;
+
+        var callCount = 0;
+        var agent = CreateAgent(
+            lastUserMessage =>
+            {
+                callCount++;
+                if (!lastUserMessage.Contains("[Tool Result"))
+                    return """[TOOL_CALL: {"name": "my_tool", "arguments": {}}]""";
+                return "Tool executed with passthrough validation.";
+            },
+            fakeToolExecutor,
+            config: config,
+            schemaValidator: new PassthroughSchemaValidator());
+
+        // Act
+        var response = await agent.ChatAsync("Do something");
+
+        // Assert: tool WAS invoked; passthrough validator did not block it
+        Assert.True(toolInvoked);
+        Assert.Equal(2, callCount);
+        Assert.Contains("passthrough validation", response.Content);
+    }
+
+    [Fact]
+    public async Task ChatAsync_MisspelledToolName_ResolvesAndExecutesCorrectTool()
+    {
+        // Arrange: register "read_file" on server "fs"; LLM misspells it as "raed_file"
+        var registry = new ToolRegistry();
+        registry.RegisterToolsFromServer("fs", new List<ToolDefinition>
+        {
+            new() { Name = "read_file", Description = "Reads a file" }
+        });
+
+        var fakeMcpManager = new FakeMcpClientManager { InvokeResult = "file contents here" };
+        var realExecutor = new McpToolExecutor(fakeMcpManager, registry);
+
+        var callCount = 0;
+        var agent = CreateAgent(lastUserMessage =>
+        {
+            callCount++;
+            if (!lastUserMessage.Contains("[Tool Result"))
+                return """[TOOL_CALL: {"name": "raed_file", "arguments": {"path": "/tmp/test.txt"}}]""";
+            return "The file contains: file contents here";
+        }, realExecutor);
+
+        // Act
+        var response = await agent.ChatAsync("Read the file");
+
+        // Assert: tool name was corrected from "raed_file" to "read_file"
+        Assert.Single(fakeMcpManager.Invocations);
+        Assert.Equal("read_file", fakeMcpManager.Invocations[0].ToolName);
+        Assert.Equal("fs", fakeMcpManager.Invocations[0].ServerName);
+        Assert.Contains("file contents", response.Content);
+        Assert.Equal(2, callCount);
+    }
+
+    [Fact]
+    public async Task ChatAsync_DryRunTrue_OverriddenToFalse()
+    {
+        // Arrange: LLM passes dryRun: true; McpToolExecutor should override to false
+        var registry = new ToolRegistry();
+        registry.RegisterToolsFromServer("fs", new List<ToolDefinition>
+        {
+            new() { Name = "edit_file", Description = "Edits a file" }
+        });
+
+        var fakeMcpManager = new FakeMcpClientManager { InvokeResult = "file edited" };
+        var realExecutor = new McpToolExecutor(fakeMcpManager, registry);
+
+        var agent = CreateAgent(lastUserMessage =>
+        {
+            if (!lastUserMessage.Contains("[Tool Result"))
+                return """[TOOL_CALL: {"name": "edit_file", "arguments": {"path": "/tmp/x.html", "content": "hello", "dryRun": true}}]""";
+            return "Done, file edited.";
+        }, realExecutor);
+
+        // Act
+        var response = await agent.ChatAsync("Edit the file");
+
+        // Assert: dryRun was overridden to false before reaching MCP
+        Assert.Single(fakeMcpManager.Invocations);
+        var args = fakeMcpManager.Invocations[0].Parameters;
+        Assert.NotNull(args);
+        Assert.True(args!.ContainsKey("dryRun"));
+        Assert.Equal(false, args["dryRun"]);
+        Assert.Contains("edited", response.Content);
     }
 
     private sealed class DelayToolExecutor : IToolExecutor

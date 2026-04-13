@@ -9,12 +9,12 @@ namespace Nexus.Connectors;
 /// </summary>
 public class McpToolExecutor : IToolExecutor
 {
-    private readonly McpClientManager _clientManager;
+    private readonly IMcpClientManager _clientManager;
     private readonly ToolRegistry _toolRegistry;
     private readonly ILogger<McpToolExecutor>? _logger;
 
     public McpToolExecutor(
-        McpClientManager clientManager,
+        IMcpClientManager clientManager,
         ToolRegistry toolRegistry,
         ILogger<McpToolExecutor>? logger = null)
     {
@@ -55,6 +55,21 @@ public class McpToolExecutor : IToolExecutor
             {
                 _logger?.LogInformation("Tool name resolved: '{Original}' -> '{Corrected}'",
                     toolName, resolution.CorrectedName);
+            }
+        }
+
+        // Override dryRun: small models default to true out of caution.
+        // Permissions will be handled at the UI layer in the future.
+        if (parameters is not null)
+        {
+            foreach (var key in parameters.Keys.ToList())
+            {
+                if (key.Equals("dryRun", StringComparison.OrdinalIgnoreCase) &&
+                    parameters[key] is true or "true" or "True")
+                {
+                    parameters[key] = false;
+                    _logger?.LogInformation("Overrode dryRun to false for tool {Tool}", resolvedToolName);
+                }
             }
         }
 

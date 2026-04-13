@@ -16,4 +16,7 @@ internal sealed class FakeMcpClientManager : IMcpClientManager
 
     public IReadOnlyDictionary<string, bool> GetServerStatus()
         => new Dictionary<string, bool>();
+
+    public Task<string> InvokeToolAsync(string serverName, string toolName, Dictionary<string, object>? parameters = null, CancellationToken ct = default)
+        => Task.FromResult(string.Empty);
 }

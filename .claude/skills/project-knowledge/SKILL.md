@@ -112,20 +112,20 @@ nexus-agent/
 │   │   │   ├── ModelRouter.cs       # Local vs cloud selection
 │   │   │   ├── OutputTruncator.cs   # Static: head/tail line truncation + UTF-8 safe byte truncation (TruncatedOutput record)
 │   │   │   ├── PromptBuilder.cs     # Memory context + tool definitions
-│   │   │   └── ToolCallParser.cs    # Multi-format tool call parser: [TOOL_CALL:] marker + <tool_call> XML + raw JSON fallback, markdown fence stripping, brace-walking state machine (WalkJsonObject)
+│   │   │   └── ToolCallParser.cs    # Multi-format tool call parser: [TOOL_CALL:] marker + <tool_call> XML + raw JSON fallback, markdown fence stripping, brace-walking state machine (WalkJsonObject 3-tuple with endedInString), mid-string JSON repair (closes unclosed quotes before appending braces), IsParsableJson guard, TryParseAll multi-tool extraction with ParsedToolCall position tracking + IsOverlapping dedup, TryParseJson shared helper
 │   │   ├── Models/              # POCOs (Nexus.Core.Models)
 │   │   │   ├── AgentResponse.cs
 │   │   │   └── ConversationMessage.cs
 │   │   ├── Config/
 │   │   │   ├── ConfigLoader.cs
 │   │   │   ├── NexusConfig.cs
-│   │   │   └── ConfigValidator.cs
+│   │   │   └── ConfigValidator.cs    # Static validation: Memory + Models + MCP config (scalar ranges, McpServerEntry transport/url)
 │   │   └── ServiceCollectionExtensions.cs # DI registration (stays at root)
 │   │
 │   ├── Nexus.Connectors/        # External tool connectivity (MCP SDK)
 │   │   ├── McpClientManager.cs  # MCP client: stdio/SSE transport, tool discovery, invocation
 │   │   ├── ToolRegistry.cs      # Dynamic tool registry (ConcurrentDictionary, thread-safe) + ToolResolution record + ResolveTool() fuzzy name resolution (exact → case-insensitive → Levenshtein ≤2 → fail)
-│   │   ├── McpToolExecutor.cs   # IToolExecutor impl: routes tool calls through MCP, uses ResolveTool() for fuzzy name matching
+│   │   ├── McpToolExecutor.cs   # IToolExecutor impl: depends on IMcpClientManager (not concrete), routes tool calls through MCP, uses ResolveTool() for fuzzy name matching
 │   │   ├── SchemaValidator.cs   # ISchemaValidator impl: validates tool args against InputSchema (required check, type coercion string→bool/number/array, unknown arg stripping)
 │   │   └── McpServiceCollectionExtensions.cs # AddNexusMcp() DI extension
 │   │
@@ -139,7 +139,7 @@ nexus-agent/
 │   │   │   ├── ChatViewModel.cs  # Chat MVVM: ChatMessage (ObservableObject, IsAssistantNormal computed) + streaming, HasMessages, SetExamplePromptCommand, error handling (HasError/ErrorMessage/ErrorDetail), RetryCommand, DismissErrorCommand, DispatchToUI virtual
 │   │   │   ├── ErrorClassifier.cs  # Static error classifier: HttpRequestException→connection, TaskCanceledException→timeout, unauthorized→apikey, default→generic
 │   │   │   ├── MemoryGraphViewModel.cs  # Graph VM: HasNodes computed property
-│   │   │   ├── SettingsViewModel.cs  # Settings MVVM: ConfigValidator integration, IsDirty/SettingsSnapshot dirty tracking, CanSave guard, inline validation errors, ApiKeyWarning, HasError/HasSuccess banners
+│   │   │   ├── SettingsViewModel.cs  # Settings MVVM: ConfigValidator integration, IsDirty/SettingsSnapshot dirty tracking (17-field record), CanSave guard, inline validation errors (Memory + MCP fields), ApiKeyWarning, HasError/HasSuccess banners, MCP tool settings (MaxToolCallIterations, ToolCallTimeoutSeconds, MaxOutputLines, MaxOutputBytes, SchemaValidationEnabled) with reactive OnChanged validation
 │   │   │   └── ActionLogViewModel.cs  # Action log VM: HasActions computed property, DispatchToUI virtual
 │   │   ├── Layout/
 │   │   │   └── ForceDirectedLayout.cs  # Fruchterman-Reingold force-directed graph layout
@@ -280,7 +280,8 @@ services.AddSingleton<IAgentService>(sp => sp.GetRequiredService<AgentService>()
 // MCP connectivity (registered separately via AddNexusMcp()):
 services.AddSingleton<McpClientManager>();  // MCP SDK client (stdio + SSE transports)
 services.AddSingleton<ToolRegistry>();      // Dynamic tool registry from MCP servers
-services.AddSingleton<IToolExecutor, McpToolExecutor>(); // Cross-layer: interface in Core, impl in Connectors
+services.AddSingleton<IToolExecutor>(sp => new McpToolExecutor(
+    sp.GetRequiredService<IMcpClientManager>(), ...)); // Cross-layer: interface in Core, impl in Connectors; depends on IMcpClientManager abstraction
 services.AddSingleton<ISchemaValidator>(sp => new SchemaValidator(...)); // Validates tool args against InputSchema (required, types, coercion)
 ```
 

@@ -25,7 +25,7 @@ public static class McpServiceCollectionExtensions
 
         services.AddSingleton<IToolExecutor>(sp =>
             new McpToolExecutor(
-                sp.GetRequiredService<McpClientManager>(),
+                sp.GetRequiredService<IMcpClientManager>(),
                 sp.GetRequiredService<ToolRegistry>(),
                 sp.GetService<ILogger<McpToolExecutor>>()));
 
