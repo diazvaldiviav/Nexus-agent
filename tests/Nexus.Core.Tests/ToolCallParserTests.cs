@@ -687,11 +687,12 @@ public class ToolCallParserTests
         var text = """{"name": "foo"}""";
 
         // Act
-        var (endIndex, missingBraces) = ToolCallParser.WalkJsonObject(text, 0);
+        var (endIndex, missingBraces, endedInString) = ToolCallParser.WalkJsonObject(text, 0);
 
         // Assert
         Assert.Equal(text.Length - 1, endIndex);
         Assert.Equal(0, missingBraces);
+        Assert.False(endedInString);
     }
 
     [Fact]
@@ -701,10 +702,268 @@ public class ToolCallParserTests
         var text = "{\"name\": \"foo\", \"arguments\": {\"path\": \"/x\"";
 
         // Act
-        var (endIndex, missingBraces) = ToolCallParser.WalkJsonObject(text, 0);
+        var (endIndex, missingBraces, endedInString) = ToolCallParser.WalkJsonObject(text, 0);
 
         // Assert
         Assert.Equal(-1, endIndex);
         Assert.True(missingBraces > 0);
+        Assert.False(endedInString);
+    }
+
+    // --- AC-1: Mid-string JSON repair ---
+
+    [Fact]
+    public void WalkJsonObject_EndedInString_ReportsTrue()
+    {
+        // Arrange: truncated mid-string value
+        var text = "{\"name\": \"foo\", \"val\": \"bar";
+
+        // Act
+        var (endIndex, missingBraces, endedInString) = ToolCallParser.WalkJsonObject(text, 0);
+
+        // Assert
+        Assert.Equal(-1, endIndex);
+        Assert.True(endedInString);
+    }
+
+    [Fact]
+    public void WalkJsonObject_EndedOutsideString_ReportsFalse()
+    {
+        // Arrange: truncated between properties (outside a string value)
+        var text = "{\"name\": \"foo\", \"arguments\": {\"path\": \"/x\"";
+
+        // Act
+        var (endIndex, missingBraces, endedInString) = ToolCallParser.WalkJsonObject(text, 0);
+
+        // Assert
+        Assert.Equal(-1, endIndex);
+        Assert.False(endedInString);
+    }
+
+    [Fact]
+    public void TryParse_TruncatedMidStringValue_RepairsAndParses()
+    {
+        // Arrange: LLM output cut off mid-value string
+        var response = "[TOOL_CALL: {\"name\": \"read_file\", \"arguments\": {\"path\": \"/some/pa";
+
+        // Act
+        var result = ToolCallParser.TryParse(response);
+
+        // Assert: partial path is repaired, name is extracted
+        Assert.NotNull(result);
+        Assert.Equal("read_file", result.Name);
+    }
+
+    [Fact]
+    public void TryParse_TruncatedMidStringKey_ReturnsNull()
+    {
+        // Arrange: truncated mid-key — key without value is unrecoverable
+        var response = "[TOOL_CALL: {\"name\": \"read_file\", \"argu";
+
+        // Act
+        var result = ToolCallParser.TryParse(response);
+
+        // Assert: cannot repair — key has no value
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void TryParse_TruncatedMidStringXml_RepairsAndParses()
+    {
+        // Arrange: XML-style marker with truncated JSON content
+        var response = "<tool_call>{\"name\": \"read_file\", \"arguments\": {\"path\": \"/trun";
+
+        // Act
+        var result = ToolCallParser.TryParse(response);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal("read_file", result.Name);
+    }
+
+    [Fact]
+    public void TryParse_TruncatedMidStringRawJson_RepairsAndParses()
+    {
+        // Arrange: raw JSON (no marker) truncated mid-string
+        var response = "{\"name\": \"read_file\", \"arguments\": {\"path\": \"/some/truncat";
+
+        // Act
+        var result = ToolCallParser.TryParse(response);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal("read_file", result.Name);
+    }
+
+    [Fact]
+    public void ExtractJsonBlock_TruncatedMidString_ClosesQuoteBeforeBraces()
+    {
+        // Arrange: truncated mid-string inside arguments
+        var text = "[TOOL_CALL: {\"name\": \"read_file\", \"arguments\": {\"path\": \"/some/pa";
+
+        // Act
+        var extracted = ToolCallParser.ExtractJsonBlock(text);
+
+        // Assert: repaired JSON ends with "}}" (the closed string quote + two closing braces)
+        Assert.NotNull(extracted);
+        Assert.EndsWith("\"}}", extracted);
+    }
+
+    [Fact]
+    public void TryParse_CompleteJson_UnaffectedByMidStringRepair()
+    {
+        // Regression: well-formed JSON must still parse correctly after mid-string repair was added
+        var response = """[TOOL_CALL: {"name": "write_file", "arguments": {"path": "/tmp/f.txt", "content": "hello world"}}]""";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal("write_file", result.Name);
+        Assert.Equal("/tmp/f.txt", result.Arguments!["path"]);
+        Assert.Equal("hello world", result.Arguments["content"]);
+    }
+
+    [Fact]
+    public void IsParsableJson_ValidJson_ReturnsTrue()
+    {
+        Assert.True(ToolCallParser.IsParsableJson("{\"name\": \"foo\"}"));
+    }
+
+    [Fact]
+    public void IsParsableJson_InvalidJson_ReturnsFalse()
+    {
+        Assert.False(ToolCallParser.IsParsableJson("{\"name\": \"foo\""));
+    }
+
+    // --- AC-2: TryParseAll multiple tool call extraction ---
+
+    [Fact]
+    public void TryParseAll_MultipleBracketMarkers_ExtractsAll()
+    {
+        // Arrange: two bracket markers in sequence
+        var response = "[TOOL_CALL: {\"name\": \"read_file\", \"arguments\": {\"path\": \"/a.txt\"}}] [TOOL_CALL: {\"name\": \"write_file\", \"arguments\": {\"path\": \"/b.txt\", \"content\": \"hi\"}}]";
+
+        // Act
+        var results = ToolCallParser.TryParseAll(response);
+
+        // Assert
+        Assert.Equal(2, results.Count);
+        Assert.Equal("read_file", results[0].Request.Name);
+        Assert.Equal("write_file", results[1].Request.Name);
+    }
+
+    [Fact]
+    public void TryParseAll_MixedBracketAndXml_ExtractsBoth()
+    {
+        // Arrange: bracket marker followed by XML block
+        var response = "[TOOL_CALL: {\"name\": \"read_file\", \"arguments\": {\"path\": \"/a.txt\"}}] <tool_call>{\"name\": \"list_tools\"}</tool_call>";
+
+        // Act
+        var results = ToolCallParser.TryParseAll(response);
+
+        // Assert
+        Assert.Equal(2, results.Count);
+        var names = results.Select(r => r.Request.Name).ToHashSet();
+        Assert.Contains("read_file", names);
+        Assert.Contains("list_tools", names);
+    }
+
+    [Fact]
+    public void TryParseAll_SingleToolCall_ReturnsSingleItemList()
+    {
+        // Arrange: exactly one bracket marker
+        var response = "[TOOL_CALL: {\"name\": \"ping\", \"arguments\": {}}]";
+
+        // Act
+        var results = ToolCallParser.TryParseAll(response);
+
+        // Assert
+        Assert.Single(results);
+        Assert.Equal("ping", results[0].Request.Name);
+    }
+
+    [Fact]
+    public void TryParseAll_NoToolCalls_ReturnsEmptyList()
+    {
+        // Arrange: plain prose with no markers
+        var response = "Sure, I can help you with that. Let me explain the concept.";
+
+        // Act
+        var results = ToolCallParser.TryParseAll(response);
+
+        // Assert
+        Assert.Empty(results);
+    }
+
+    [Fact]
+    public void TryParseAll_EmptyString_ReturnsEmptyList()
+    {
+        // Act
+        var results = ToolCallParser.TryParseAll("");
+
+        // Assert
+        Assert.Empty(results);
+    }
+
+    [Fact]
+    public void TryParseAll_NullString_ReturnsEmptyList()
+    {
+        // Act
+        var results = ToolCallParser.TryParseAll(null);
+
+        // Assert
+        Assert.Empty(results);
+    }
+
+    [Fact]
+    public void TryParseAll_DuplicateNotDoubleCounted()
+    {
+        // Arrange: a bracket marker whose body is also valid raw JSON — should yield count = 1
+        // The bracket extraction covers positions [0, N], the raw JSON scan finds the same '{' inside
+        // and IsOverlapping suppresses the duplicate.
+        var response = "[TOOL_CALL: {\"name\": \"read_file\", \"arguments\": {\"path\": \"/a.txt\"}}]";
+
+        // Act
+        var results = ToolCallParser.TryParseAll(response);
+
+        // Assert: exactly 1 result, not 2
+        Assert.Single(results);
+        Assert.Equal("read_file", results[0].Request.Name);
+    }
+
+    [Fact]
+    public void TryParseAll_MultipleRawJson_ExtractsAll()
+    {
+        // Arrange: two raw JSON objects separated by prose
+        var response = "First: {\"name\": \"read_file\", \"arguments\": {\"path\": \"/a.txt\"}} then {\"name\": \"write_file\", \"arguments\": {\"path\": \"/b.txt\", \"content\": \"x\"}}";
+
+        // Act
+        var results = ToolCallParser.TryParseAll(response);
+
+        // Assert
+        Assert.Equal(2, results.Count);
+        var names = results.Select(r => r.Request.Name).ToHashSet();
+        Assert.Contains("read_file", names);
+        Assert.Contains("write_file", names);
+    }
+
+    [Fact]
+    public void TryParseAll_MixedAllThreeTypes_ExtractsAll()
+    {
+        // Arrange: bracket + XML + raw JSON all in one response
+        var response =
+            "[TOOL_CALL: {\"name\": \"bracket_tool\", \"arguments\": {}}] " +
+            "<tool_call>{\"name\": \"xml_tool\", \"arguments\": {}}</tool_call> " +
+            "{\"name\": \"raw_tool\", \"arguments\": {}}";
+
+        // Act
+        var results = ToolCallParser.TryParseAll(response);
+
+        // Assert
+        Assert.Equal(3, results.Count);
+        var names = results.Select(r => r.Request.Name).ToHashSet();
+        Assert.Contains("bracket_tool", names);
+        Assert.Contains("xml_tool", names);
+        Assert.Contains("raw_tool", names);
     }
 }

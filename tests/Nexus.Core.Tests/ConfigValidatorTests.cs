@@ -149,4 +149,250 @@ public class ConfigValidatorTests
         Assert.Equal(4, result.Errors.Count);
     }
 
+    // ── ValidateMaxToolCallIterations ──────────────────────────────────────
+
+    [Fact]
+    public void ValidateMaxToolCallIterations_InRange_ReturnsNull()
+    {
+        var result = ConfigValidator.ValidateMaxToolCallIterations(5);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ValidateMaxToolCallIterations_BelowMin_ReturnsError()
+    {
+        var result = ConfigValidator.ValidateMaxToolCallIterations(0);
+        Assert.NotNull(result);
+        Assert.Contains("1", result);
+        Assert.Contains("20", result);
+    }
+
+    [Fact]
+    public void ValidateMaxToolCallIterations_AboveMax_ReturnsError()
+    {
+        var result = ConfigValidator.ValidateMaxToolCallIterations(21);
+        Assert.NotNull(result);
+        Assert.Contains("20", result);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(20)]
+    public void ValidateMaxToolCallIterations_AtBoundaries_ReturnsNull(int value)
+    {
+        var result = ConfigValidator.ValidateMaxToolCallIterations(value);
+        Assert.Null(result);
+    }
+
+    // ── ValidateToolCallTimeoutSeconds ────────────────────────────────────
+
+    [Fact]
+    public void ValidateToolCallTimeoutSeconds_InRange_ReturnsNull()
+    {
+        var result = ConfigValidator.ValidateToolCallTimeoutSeconds(30);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ValidateToolCallTimeoutSeconds_BelowMin_ReturnsError()
+    {
+        var result = ConfigValidator.ValidateToolCallTimeoutSeconds(0);
+        Assert.NotNull(result);
+        Assert.Contains("1", result);
+        Assert.Contains("300", result);
+    }
+
+    [Fact]
+    public void ValidateToolCallTimeoutSeconds_AboveMax_ReturnsError()
+    {
+        var result = ConfigValidator.ValidateToolCallTimeoutSeconds(301);
+        Assert.NotNull(result);
+        Assert.Contains("300", result);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(300)]
+    public void ValidateToolCallTimeoutSeconds_AtBoundaries_ReturnsNull(int value)
+    {
+        var result = ConfigValidator.ValidateToolCallTimeoutSeconds(value);
+        Assert.Null(result);
+    }
+
+    // ── ValidateMaxOutputLines ─────────────────────────────────────────────
+
+    [Fact]
+    public void ValidateMaxOutputLines_InRange_ReturnsNull()
+    {
+        var result = ConfigValidator.ValidateMaxOutputLines(200);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ValidateMaxOutputLines_BelowMin_ReturnsError()
+    {
+        var result = ConfigValidator.ValidateMaxOutputLines(0);
+        Assert.NotNull(result);
+        Assert.Contains("1", result);
+        Assert.Contains("10000", result);
+    }
+
+    [Fact]
+    public void ValidateMaxOutputLines_AboveMax_ReturnsError()
+    {
+        var result = ConfigValidator.ValidateMaxOutputLines(10001);
+        Assert.NotNull(result);
+        Assert.Contains("10000", result);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(10000)]
+    public void ValidateMaxOutputLines_AtBoundaries_ReturnsNull(int value)
+    {
+        var result = ConfigValidator.ValidateMaxOutputLines(value);
+        Assert.Null(result);
+    }
+
+    // ── ValidateMaxOutputBytes ─────────────────────────────────────────────
+
+    [Fact]
+    public void ValidateMaxOutputBytes_InRange_ReturnsNull()
+    {
+        var result = ConfigValidator.ValidateMaxOutputBytes(32000);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ValidateMaxOutputBytes_BelowMin_ReturnsError()
+    {
+        var result = ConfigValidator.ValidateMaxOutputBytes(999);
+        Assert.NotNull(result);
+        Assert.Contains("1000", result);
+        Assert.Contains("500000", result);
+    }
+
+    [Fact]
+    public void ValidateMaxOutputBytes_AboveMax_ReturnsError()
+    {
+        var result = ConfigValidator.ValidateMaxOutputBytes(500001);
+        Assert.NotNull(result);
+        Assert.Contains("500000", result);
+    }
+
+    [Theory]
+    [InlineData(1000)]
+    [InlineData(500000)]
+    public void ValidateMaxOutputBytes_AtBoundaries_ReturnsNull(int value)
+    {
+        var result = ConfigValidator.ValidateMaxOutputBytes(value);
+        Assert.Null(result);
+    }
+
+    // ── ValidateMcpServerEntry ─────────────────────────────────────────────
+
+    [Fact]
+    public void ValidateMcpServerEntry_ValidStdio_ReturnsNull()
+    {
+        var entry = new McpServerEntry { Name = "my-server", Transport = "stdio", Command = "npx" };
+        var result = ConfigValidator.ValidateMcpServerEntry(entry);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ValidateMcpServerEntry_ValidSse_ReturnsNull()
+    {
+        var entry = new McpServerEntry { Name = "my-sse", Transport = "sse", Url = "http://localhost:8080/sse" };
+        var result = ConfigValidator.ValidateMcpServerEntry(entry);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ValidateMcpServerEntry_EmptyName_ReturnsError()
+    {
+        var entry = new McpServerEntry { Name = "", Transport = "stdio", Command = "npx" };
+        var result = ConfigValidator.ValidateMcpServerEntry(entry);
+        Assert.NotNull(result);
+        Assert.Contains("name is required", result, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateMcpServerEntry_InvalidTransport_ReturnsError()
+    {
+        var entry = new McpServerEntry { Name = "my-server", Transport = "grpc" };
+        var result = ConfigValidator.ValidateMcpServerEntry(entry);
+        Assert.NotNull(result);
+        Assert.Contains("grpc", result);
+    }
+
+    [Fact]
+    public void ValidateMcpServerEntry_StdioMissingCommand_ReturnsError()
+    {
+        var entry = new McpServerEntry { Name = "my-server", Transport = "stdio", Command = null };
+        var result = ConfigValidator.ValidateMcpServerEntry(entry);
+        Assert.NotNull(result);
+        Assert.Contains("Command is required", result);
+    }
+
+    [Fact]
+    public void ValidateMcpServerEntry_SseMissingUrl_ReturnsError()
+    {
+        var entry = new McpServerEntry { Name = "my-sse", Transport = "sse", Url = null };
+        var result = ConfigValidator.ValidateMcpServerEntry(entry);
+        Assert.NotNull(result);
+        Assert.Contains("Url is required", result);
+    }
+
+    [Fact]
+    public void ValidateMcpServerEntry_SseInvalidUrl_ReturnsError()
+    {
+        var entry = new McpServerEntry { Name = "my-sse", Transport = "sse", Url = "not-a-url" };
+        var result = ConfigValidator.ValidateMcpServerEntry(entry);
+        Assert.NotNull(result);
+        Assert.Contains("valid HTTP or HTTPS URL", result);
+    }
+
+    // ── Validate() integration ─────────────────────────────────────────────
+
+    [Fact]
+    public void Validate_InvalidMcpConfig_ReturnsAllErrors()
+    {
+        // Arrange: all 4 MCP ints out of range + server with empty name
+        var config = new NexusConfig();
+        config.Mcp.MaxToolCallIterations = 0;
+        config.Mcp.ToolCallTimeoutSeconds = 0;
+        config.Mcp.MaxOutputLines = 0;
+        config.Mcp.MaxOutputBytes = 0;
+        config.Mcp.Servers.Add(new McpServerEntry { Name = "", Transport = "stdio" });
+
+        // Act
+        var result = ConfigValidator.Validate(config);
+
+        // Assert
+        Assert.False(result.IsValid);
+        Assert.NotNull(result.GetError("Mcp.MaxToolCallIterations"));
+        Assert.NotNull(result.GetError("Mcp.ToolCallTimeoutSeconds"));
+        Assert.NotNull(result.GetError("Mcp.MaxOutputLines"));
+        Assert.NotNull(result.GetError("Mcp.MaxOutputBytes"));
+        Assert.NotNull(result.GetError("Mcp.Servers[0]"));
+        Assert.Equal(5, result.Errors.Count);
+    }
+
+    [Fact]
+    public void Validate_TwoInvalidServers_ReturnsTwoIndexedErrors()
+    {
+        // Arrange: two bad servers — both missing required fields
+        var config = new NexusConfig();
+        config.Mcp.Servers.Add(new McpServerEntry { Name = "server-a", Transport = "stdio", Command = null });
+        config.Mcp.Servers.Add(new McpServerEntry { Name = "server-b", Transport = "sse", Url = null });
+
+        // Act
+        var result = ConfigValidator.Validate(config);
+
+        // Assert
+        Assert.False(result.IsValid);
+        Assert.NotNull(result.GetError("Mcp.Servers[0]"));
+        Assert.NotNull(result.GetError("Mcp.Servers[1]"));
+    }
+
 }

@@ -10,6 +10,12 @@ namespace Nexus.Core.Services;
 public record ToolCallRequest(string Name, Dictionary<string, object>? Arguments);
 
 /// <summary>
+/// A parsed tool call with its position in the processed text (after fence stripping).
+/// Foundation for future concurrent execution.
+/// </summary>
+public record ParsedToolCall(ToolCallRequest Request, int StartIndex, int EndIndex);
+
+/// <summary>
 /// Parses tool call markers from LLM responses using structural JSON extraction.
 ///
 /// Supports three input formats in priority order:
@@ -68,34 +74,9 @@ public static class ToolCallParser
                 return null;
             }
 
-            json = SanitizeInvalidEscapes(json);
-
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            if (!root.TryGetProperty("name", out var nameElement))
-                return null;
-
-            var name = nameElement.GetString();
-            if (string.IsNullOrWhiteSpace(name))
-                return null;
-
-            Dictionary<string, object>? arguments = null;
-            var argSource = ResolveArgumentsSource(root);
-            if (argSource is not null)
-            {
-                arguments = new Dictionary<string, object>();
-                foreach (var prop in argSource)
-                    arguments[prop.Name] = MapJsonValue(prop.Value);
-            }
-
-            // Sanitize repetition loops in arguments (small models hallucinate repeating segments)
-            if (arguments is not null)
-                SanitizeRepetitionLoops(arguments);
-
-            return new ToolCallRequest(name, arguments);
+            return TryParseJson(json);
         }
-        catch (JsonException ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             var processed = StripMarkdownFences(llmResponse);
             var extracted = ExtractJsonBlock(processed)
@@ -191,11 +172,30 @@ public static class ToolCallParser
         var contentStart = openIndex + XmlOpenTag.Length;
 
         var closeIndex = text.IndexOf(XmlCloseTag, contentStart, StringComparison.OrdinalIgnoreCase);
-        if (closeIndex >= 0)
-            return text[contentStart..closeIndex].Trim();
+        var content = closeIndex >= 0
+            ? text[contentStart..closeIndex].Trim()
+            : text[contentStart..].Trim();
 
-        // No closing tag — return from content start to end of text (best-effort)
-        return text[contentStart..].Trim();
+        // Apply brace-walking repair if the content contains a JSON object
+        var braceStart = content.IndexOf('{');
+        if (braceStart >= 0)
+        {
+            var (end, depth, inStr) = WalkJsonObject(content, braceStart);
+            if (end >= 0)
+                return content[..(end + 1)];
+            if (depth > 0)
+            {
+                var repaired = content.TrimEnd();
+                if (repaired.EndsWith(']'))
+                    repaired = repaired[..^1].TrimEnd();
+                if (inStr)
+                    repaired += '"';
+                repaired += new string('}', depth);
+                return IsParsableJson(repaired) ? repaired : null;
+            }
+        }
+
+        return content;
     }
 
     /// <summary>
@@ -209,7 +209,7 @@ public static class ToolCallParser
         if (start < 0)
             return null;
 
-        var (endIndex, missingBraces) = WalkJsonObject(text, start);
+        var (endIndex, missingBraces, endedInString) = WalkJsonObject(text, start);
 
         if (endIndex >= 0)
             return text[start..(endIndex + 1)];
@@ -220,7 +220,10 @@ public static class ToolCallParser
             var partial = text[start..].TrimEnd();
             if (partial.EndsWith(']'))
                 partial = partial[..^1].TrimEnd();
-            return partial + new string('}', missingBraces);
+            if (endedInString)
+                partial += '"';
+            var repaired = partial + new string('}', missingBraces);
+            return IsParsableJson(repaired) ? repaired : null;
         }
 
         return null;
@@ -231,9 +234,9 @@ public static class ToolCallParser
     /// Scans forward looking for '{', then does a lightweight string search for '"name"' within
     /// the object boundary (up to 512 chars ahead) without full parsing. Returns -1 if not found.
     /// </summary>
-    private static int FindRawJsonStart(string text)
+    private static int FindRawJsonStart(string text, int startOffset = 0)
     {
-        for (var i = 0; i < text.Length; i++)
+        for (var i = startOffset; i < text.Length; i++)
         {
             if (text[i] != '{')
                 continue;
@@ -272,7 +275,7 @@ public static class ToolCallParser
         if (openBrace < 0)
             return null;
 
-        var (endBrace, depth) = WalkJsonObject(text, openBrace);
+        var (endBrace, depth, endedInString) = WalkJsonObject(text, openBrace);
 
         if (endBrace >= 0)
             return text[openBrace..(endBrace + 1)];
@@ -285,8 +288,10 @@ public static class ToolCallParser
             var trimmed = partial.TrimEnd();
             if (trimmed.EndsWith(']'))
                 trimmed = trimmed[..^1].TrimEnd();
-
-            return trimmed + new string('}', depth);
+            if (endedInString)
+                trimmed += '"';
+            var repaired = trimmed + new string('}', depth);
+            return IsParsableJson(repaired) ? repaired : null;
         }
 
         return null;
@@ -295,10 +300,12 @@ public static class ToolCallParser
     /// <summary>
     /// Walks a JSON object starting at startIndex (which must be '{'), tracking brace depth
     /// while respecting string literals and escape sequences.
-    /// Returns (endIndex, 0) when the closing brace is found, or (-1, missingBraces) when
-    /// the text ends before the object is closed (for repair by callers).
+    /// Returns (endIndex, 0, false) when the closing brace is found, or (-1, missingBraces, inString)
+    /// when the text ends before the object is closed (for repair by callers).
+    /// The endedInString flag tells callers whether the walk terminated mid-string literal,
+    /// so they can close the quote before appending missing braces.
     /// </summary>
-    internal static (int endIndex, int missingBraces) WalkJsonObject(string text, int startIndex)
+    internal static (int endIndex, int missingBraces, bool endedInString) WalkJsonObject(string text, int startIndex)
     {
         var depth = 0;
         var inString = false;
@@ -335,11 +342,21 @@ public static class ToolCallParser
             {
                 depth--;
                 if (depth == 0)
-                    return (i, 0);
+                    return (i, 0, false);
             }
         }
 
-        return (-1, depth);
+        return (-1, depth, inString);
+    }
+
+    /// <summary>
+    /// Returns true if the given string is parseable as a JSON document; false otherwise.
+    /// Used as a gate to avoid returning repaired-but-invalid JSON to callers.
+    /// </summary>
+    internal static bool IsParsableJson(string json)
+    {
+        try { using var doc = JsonDocument.Parse(json); return true; }
+        catch (JsonException) { return false; }
     }
 
     /// <summary>
@@ -376,6 +393,243 @@ public static class ToolCallParser
         JsonValueKind.False  => false,
         _                    => element.Clone()
     };
+
+    /// <summary>
+    /// Shared parse helper: given a raw JSON string, sanitizes escapes, parses the document,
+    /// extracts name + arguments, and applies repetition-loop sanitization.
+    /// Returns null on any failure (broad catch matching TryParse pattern).
+    /// The JsonDocument is disposed before return — all values are plain CLR types or cloned JsonElements.
+    /// </summary>
+    private static ToolCallRequest? TryParseJson(string json)
+    {
+        try
+        {
+            var sanitized = SanitizeInvalidEscapes(json);
+
+            using var doc = JsonDocument.Parse(sanitized);
+            var root = doc.RootElement;
+
+            if (!root.TryGetProperty("name", out var nameElement))
+                return null;
+
+            var name = nameElement.GetString();
+            if (string.IsNullOrWhiteSpace(name))
+                return null;
+
+            Dictionary<string, object>? arguments = null;
+            var argSource = ResolveArgumentsSource(root);
+            if (argSource is not null)
+            {
+                arguments = new Dictionary<string, object>();
+                foreach (var prop in argSource)
+                    arguments[prop.Name] = MapJsonValue(prop.Value);
+            }
+
+            if (arguments is not null)
+                SanitizeRepetitionLoops(arguments);
+
+            return new ToolCallRequest(name, arguments);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Returns true if the candidate range [start, end] overlaps any range in the existing list.
+    /// Used by TryParseAll to deduplicate tool calls extracted by multiple paths.
+    /// </summary>
+    private static bool IsOverlapping(List<ParsedToolCall> existing, int start, int end)
+    {
+        foreach (var tc in existing)
+        {
+            if (start <= tc.EndIndex && end >= tc.StartIndex)
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Extracts all tool calls from an LLM response. Returns empty list (never null) when no tool calls found.
+    /// Deduplicates overlapping ranges. Each ParsedToolCall includes position in processed text.
+    /// </summary>
+    public static List<ParsedToolCall> TryParseAll(string? llmResponse)
+    {
+        var results = new List<ParsedToolCall>();
+
+        if (string.IsNullOrEmpty(llmResponse))
+            return results;
+
+        var text = StripMarkdownFences(llmResponse);
+
+        // Path 1: bracket markers [TOOL_CALL: {...}]
+        var searchFrom = 0;
+        while (true)
+        {
+            var markerIndex = text.IndexOf(Marker, searchFrom, StringComparison.Ordinal);
+            if (markerIndex < 0)
+                break;
+
+            var afterMarker = markerIndex + Marker.Length;
+            var openBrace = -1;
+            for (var i = afterMarker; i < text.Length; i++)
+            {
+                if (text[i] == '{') { openBrace = i; break; }
+                if (!char.IsWhiteSpace(text[i])) break;
+            }
+
+            if (openBrace >= 0)
+            {
+                var (endBrace, depth, endedInString) = WalkJsonObject(text, openBrace);
+                string? json;
+                int endPos;
+
+                if (endBrace >= 0)
+                {
+                    json = text[openBrace..(endBrace + 1)];
+                    endPos = endBrace;
+                }
+                else if (depth > 0)
+                {
+                    var partial = text[openBrace..].TrimEnd();
+                    if (partial.EndsWith(']'))
+                        partial = partial[..^1].TrimEnd();
+                    if (endedInString)
+                        partial += '"';
+                    var repaired = partial + new string('}', depth);
+                    json = IsParsableJson(repaired) ? repaired : null;
+                    endPos = text.Length - 1;
+                }
+                else
+                {
+                    json = null;
+                    endPos = openBrace;
+                }
+
+                if (json is not null && !IsOverlapping(results, markerIndex, endPos))
+                {
+                    try
+                    {
+                        var request = TryParseJson(json);
+                        if (request is not null)
+                            results.Add(new ParsedToolCall(request, markerIndex, endPos));
+                    }
+                    catch (Exception ex) { Debug.WriteLine($"[ToolCallParser] Bracket candidate parse failed: {ex.Message}"); }
+                }
+
+                searchFrom = endPos + 1;
+            }
+            else
+            {
+                searchFrom = afterMarker;
+            }
+        }
+
+        // Path 2: XML blocks <tool_call>...</tool_call>
+        searchFrom = 0;
+        while (true)
+        {
+            var openIndex = text.IndexOf(XmlOpenTag, searchFrom, StringComparison.OrdinalIgnoreCase);
+            if (openIndex < 0)
+                break;
+
+            var contentStart = openIndex + XmlOpenTag.Length;
+            var closeIndex = text.IndexOf(XmlCloseTag, contentStart, StringComparison.OrdinalIgnoreCase);
+            var endPos = closeIndex >= 0 ? closeIndex + XmlCloseTag.Length - 1 : text.Length - 1;
+            var content = closeIndex >= 0
+                ? text[contentStart..closeIndex].Trim()
+                : text[contentStart..].Trim();
+
+            string? json = null;
+            var braceStart = content.IndexOf('{');
+            if (braceStart >= 0)
+            {
+                var (end, walkDepth, inStr) = WalkJsonObject(content, braceStart);
+                if (end >= 0)
+                {
+                    json = content[..(end + 1)];
+                }
+                else if (walkDepth > 0)
+                {
+                    var repaired = content.TrimEnd();
+                    if (repaired.EndsWith(']'))
+                        repaired = repaired[..^1].TrimEnd();
+                    if (inStr)
+                        repaired += '"';
+                    repaired += new string('}', walkDepth);
+                    json = IsParsableJson(repaired) ? repaired : null;
+                }
+            }
+            else
+            {
+                json = content;
+            }
+
+            if (json is not null && !IsOverlapping(results, openIndex, endPos))
+            {
+                try
+                {
+                    var request = TryParseJson(json);
+                    if (request is not null)
+                        results.Add(new ParsedToolCall(request, openIndex, endPos));
+                }
+                catch (Exception ex) { Debug.WriteLine($"[ToolCallParser] XML candidate parse failed: {ex.Message}"); }
+            }
+
+            searchFrom = endPos + 1;
+        }
+
+        // Path 3: raw JSON objects with a "name" property
+        searchFrom = 0;
+        while (true)
+        {
+            var start = FindRawJsonStart(text, searchFrom);
+            if (start < 0)
+                break;
+
+            var (endIndex, missingBraces, endedInString) = WalkJsonObject(text, start);
+            string? json;
+            int endPos;
+
+            if (endIndex >= 0)
+            {
+                json = text[start..(endIndex + 1)];
+                endPos = endIndex;
+            }
+            else if (missingBraces > 0)
+            {
+                var partial = text[start..].TrimEnd();
+                if (partial.EndsWith(']'))
+                    partial = partial[..^1].TrimEnd();
+                if (endedInString)
+                    partial += '"';
+                var repaired = partial + new string('}', missingBraces);
+                json = IsParsableJson(repaired) ? repaired : null;
+                endPos = text.Length - 1;
+            }
+            else
+            {
+                json = null;
+                endPos = start;
+            }
+
+            if (json is not null && !IsOverlapping(results, start, endPos))
+            {
+                try
+                {
+                    var request = TryParseJson(json);
+                    if (request is not null)
+                        results.Add(new ParsedToolCall(request, start, endPos));
+                }
+                catch (Exception ex) { Debug.WriteLine($"[ToolCallParser] Raw JSON candidate parse failed: {ex.Message}"); }
+            }
+
+            searchFrom = endPos + 1;
+        }
+
+        return results;
+    }
 
     /// <summary>
     /// Fixes invalid JSON escape sequences produced by some LLMs (e.g. gemma4).

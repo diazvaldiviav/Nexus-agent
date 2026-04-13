@@ -106,6 +106,63 @@
                     </Grid>
                 </StackPanel>
 
+                <!-- MCP Tool Settings -->
+                <StackPanel Spacing="12">
+                    <TextBlock Text="MCP Tool Settings" FontWeight="SemiBold" FontSize="14" />
+                    <Grid ColumnDefinitions="200,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto">
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Max tool call iterations (1-20):" VerticalAlignment="Center" />
+                        <NumericUpDown Grid.Row="0" Grid.Column="1"
+                                       Value="{Binding MaxToolCallIterations}"
+                                       Minimum="1" Maximum="20" Increment="1"
+                                       FormatString="F0"
+                                       AutomationProperties.Name="Max tool call iterations" />
+                        <TextBlock Grid.Row="1" Grid.Column="1"
+                                   Text="{Binding MaxToolCallIterationsError}" Foreground="#f38ba8" FontSize="12"
+                                   IsVisible="{Binding MaxToolCallIterationsError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                   Margin="0,2,0,0" />
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Tool call timeout (seconds):" VerticalAlignment="Center" Margin="0,8,0,0" />
+                        <NumericUpDown Grid.Row="2" Grid.Column="1"
+                                       Value="{Binding ToolCallTimeoutSeconds}"
+                                       Minimum="1" Maximum="300" Increment="1"
+                                       FormatString="F0" Margin="0,8,0,0"
+                                       AutomationProperties.Name="Tool call timeout seconds" />
+                        <TextBlock Grid.Row="3" Grid.Column="1"
+                                   Text="{Binding ToolCallTimeoutSecondsError}" Foreground="#f38ba8" FontSize="12"
+                                   IsVisible="{Binding ToolCallTimeoutSecondsError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                   Margin="0,2,0,0" />
+
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Max output lines (1-10000):" VerticalAlignment="Center" Margin="0,8,0,0" />
+                        <NumericUpDown Grid.Row="4" Grid.Column="1"
+                                       Value="{Binding MaxOutputLines}"
+                                       Minimum="1" Maximum="10000" Increment="1"
+                                       FormatString="N0" Margin="0,8,0,0"
+                                       AutomationProperties.Name="Max output lines" />
+                        <TextBlock Grid.Row="5" Grid.Column="1"
+                                   Text="{Binding MaxOutputLinesError}" Foreground="#f38ba8" FontSize="12"
+                                   IsVisible="{Binding MaxOutputLinesError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                   Margin="0,2,0,0" />
+
+                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Max output bytes (1000-500000):" VerticalAlignment="Center" Margin="0,8,0,0" />
+                        <NumericUpDown Grid.Row="6" Grid.Column="1"
+                                       Value="{Binding MaxOutputBytes}"
+                                       Minimum="1000" Maximum="500000" Increment="1000"
+                                       FormatString="N0" Margin="0,8,0,0"
+                                       AutomationProperties.Name="Max output bytes" />
+                        <TextBlock Grid.Row="7" Grid.Column="1"
+                                   Text="{Binding MaxOutputBytesError}" Foreground="#f38ba8" FontSize="12"
+                                   IsVisible="{Binding MaxOutputBytesError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                   Margin="0,2,0,0" />
+
+                        <TextBlock Grid.Row="8" Grid.Column="0" Text="Schema validation:" VerticalAlignment="Center" Margin="0,8,0,0" />
+                        <ToggleSwitch Grid.Row="8" Grid.Column="1"
+                                      IsChecked="{Binding SchemaValidationEnabled}"
+                                      OnContent="Enabled" OffContent="Disabled"
+                                      AutomationProperties.Name="Schema validation"
+                                      Margin="0,8,0,0" />
+                    </Grid>
+                </StackPanel>
+
                 <!-- MCP Servers -->
                 <StackPanel Spacing="12">
                     <TextBlock Text="MCP Servers" FontWeight="SemiBold" FontSize="14" />

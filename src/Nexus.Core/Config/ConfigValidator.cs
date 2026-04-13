@@ -15,6 +15,12 @@ public static class ConfigValidator
         AddIfNotNull(errors, "LocalEndpoint", ValidateLocalEndpoint(config.Models.Local.Endpoint));
         AddIfNotNull(errors, "SummarizationInterval", ValidateSummarizationInterval(config.Memory.SummarizationInterval));
         AddIfNotNull(errors, "RecentInteractionsFetchLimit", ValidateRecentInteractionsFetchLimit(config.Memory.RecentInteractionsFetchLimit));
+        AddIfNotNull(errors, "Mcp.MaxToolCallIterations", ValidateMaxToolCallIterations(config.Mcp.MaxToolCallIterations));
+        AddIfNotNull(errors, "Mcp.ToolCallTimeoutSeconds", ValidateToolCallTimeoutSeconds(config.Mcp.ToolCallTimeoutSeconds));
+        AddIfNotNull(errors, "Mcp.MaxOutputLines", ValidateMaxOutputLines(config.Mcp.MaxOutputLines));
+        AddIfNotNull(errors, "Mcp.MaxOutputBytes", ValidateMaxOutputBytes(config.Mcp.MaxOutputBytes));
+        for (var i = 0; i < config.Mcp.Servers.Count; i++)
+            AddIfNotNull(errors, $"Mcp.Servers[{i}]", ValidateMcpServerEntry(config.Mcp.Servers[i]));
         return new ValidationResult(errors);
     }
 
@@ -31,6 +37,36 @@ public static class ConfigValidator
 
     public static string? ValidateRecentInteractionsFetchLimit(int value)
         => value < 1 || value > 50 ? "Recent interactions limit must be between 1 and 50." : null;
+
+    public static string? ValidateMaxToolCallIterations(int value)
+        => value < 1 || value > 20 ? "MaxToolCallIterations must be between 1 and 20." : null;
+
+    public static string? ValidateToolCallTimeoutSeconds(int value)
+        => value < 1 || value > 300 ? "ToolCallTimeoutSeconds must be between 1 and 300." : null;
+
+    public static string? ValidateMaxOutputLines(int value)
+        => value < 1 || value > 10000 ? "MaxOutputLines must be between 1 and 10000." : null;
+
+    public static string? ValidateMaxOutputBytes(int value)
+        => value < 1000 || value > 500000 ? "MaxOutputBytes must be between 1000 and 500000." : null;
+
+    public static string? ValidateMcpServerEntry(McpServerEntry entry)
+    {
+        if (string.IsNullOrWhiteSpace(entry.Name))
+            return "Server name is required.";
+        var transport = entry.Transport?.ToLowerInvariant();
+        if (transport is not ("stdio" or "sse"))
+            return $"Transport must be 'stdio' or 'sse', got '{entry.Transport}'.";
+        if (transport == "stdio" && string.IsNullOrWhiteSpace(entry.Command))
+            return $"Server '{entry.Name}': Command is required for stdio transport.";
+        if (transport == "sse" && string.IsNullOrWhiteSpace(entry.Url))
+            return $"Server '{entry.Name}': Url is required for sse transport.";
+        if (transport == "sse" && !string.IsNullOrWhiteSpace(entry.Url)
+            && (!Uri.TryCreate(entry.Url, UriKind.Absolute, out var uri)
+                || (uri.Scheme != "http" && uri.Scheme != "https")))
+            return $"Server '{entry.Name}': Url must be a valid HTTP or HTTPS URL.";
+        return null;
+    }
 
     public static string? CheckApiKeyWarning(string? cloudProvider, string? geminiKey, string? anthropicKey, string? openAiKey)
     {

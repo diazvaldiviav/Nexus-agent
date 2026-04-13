@@ -26,6 +26,11 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private decimal _decayLambda = 0.05m;
     [ObservableProperty] private int _summarizationInterval = 10;
     [ObservableProperty] private int _recentInteractionsFetchLimit = 5;
+    [ObservableProperty] private int _maxToolCallIterations = 3;
+    [ObservableProperty] private int _toolCallTimeoutSeconds = 30;
+    [ObservableProperty] private int _maxOutputLines = 200;
+    [ObservableProperty] private int _maxOutputBytes = 32000;
+    [ObservableProperty] private bool _schemaValidationEnabled = true;
     [ObservableProperty] private string _statusMessage = string.Empty;
     [ObservableProperty] private bool _hasError;
     [ObservableProperty] private bool _hasSuccess;
@@ -45,6 +50,23 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasValidationErrors))]
     private string? _recentInteractionsFetchLimitError;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasValidationErrors))]
+    private string? _maxToolCallIterationsError;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasValidationErrors))]
+    private string? _toolCallTimeoutSecondsError;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasValidationErrors))]
+    private string? _maxOutputLinesError;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasValidationErrors))]
+    private string? _maxOutputBytesError;
+
     [ObservableProperty] private string? _apiKeyWarning;
     [ObservableProperty] private string _newMcpServerName = string.Empty;
     [ObservableProperty] private string _newMcpServerTransport = "stdio";
@@ -57,7 +79,11 @@ public partial class SettingsViewModel : ObservableObject
         DecayLambdaError is not null ||
         LocalEndpointError is not null ||
         SummarizationIntervalError is not null ||
-        RecentInteractionsFetchLimitError is not null;
+        RecentInteractionsFetchLimitError is not null ||
+        MaxToolCallIterationsError is not null ||
+        ToolCallTimeoutSecondsError is not null ||
+        MaxOutputLinesError is not null ||
+        MaxOutputBytesError is not null;
 
     public ObservableCollection<string> AvailableLocalModels { get; } = new(
         new[] { "qwen3:14b", "qwen3:8b", "llama3.2:3b", "mistral:7b", "phi3:mini" });
@@ -97,6 +123,11 @@ public partial class SettingsViewModel : ObservableObject
             DecayLambda = (decimal)_config.Memory.RelevanceDecayLambda;
             SummarizationInterval = _config.Memory.SummarizationInterval;
             RecentInteractionsFetchLimit = _config.Memory.RecentInteractionsFetchLimit;
+            MaxToolCallIterations = _config.Mcp.MaxToolCallIterations;
+            ToolCallTimeoutSeconds = _config.Mcp.ToolCallTimeoutSeconds;
+            MaxOutputLines = _config.Mcp.MaxOutputLines;
+            MaxOutputBytes = _config.Mcp.MaxOutputBytes;
+            SchemaValidationEnabled = _config.Mcp.SchemaValidationEnabled;
 
             _lastSnapshot = CaptureSnapshot();
             IsDirty = false;
@@ -104,6 +135,10 @@ public partial class SettingsViewModel : ObservableObject
             LocalEndpointError = null;
             SummarizationIntervalError = null;
             RecentInteractionsFetchLimitError = null;
+            MaxToolCallIterationsError = null;
+            ToolCallTimeoutSecondsError = null;
+            MaxOutputLinesError = null;
+            MaxOutputBytesError = null;
             ApiKeyWarning = ConfigValidator.CheckApiKeyWarning(CloudProvider, GeminiApiKey, AnthropicApiKey, OpenAiApiKey);
             RefreshMcpServers();
         }
@@ -131,6 +166,11 @@ public partial class SettingsViewModel : ObservableObject
         _config.Memory.RelevanceDecayLambda = (double)DecayLambda;
         _config.Memory.SummarizationInterval = SummarizationInterval;
         _config.Memory.RecentInteractionsFetchLimit = RecentInteractionsFetchLimit;
+        _config.Mcp.MaxToolCallIterations = MaxToolCallIterations;
+        _config.Mcp.ToolCallTimeoutSeconds = ToolCallTimeoutSeconds;
+        _config.Mcp.MaxOutputLines = MaxOutputLines;
+        _config.Mcp.MaxOutputBytes = MaxOutputBytes;
+        _config.Mcp.SchemaValidationEnabled = SchemaValidationEnabled;
 
         try
         {
@@ -157,7 +197,9 @@ public partial class SettingsViewModel : ObservableObject
         CloudProvider, CloudModel,
         GeminiApiKey, AnthropicApiKey, OpenAiApiKey,
         EmbeddingsModel, DecayLambda,
-        SummarizationInterval, RecentInteractionsFetchLimit);
+        SummarizationInterval, RecentInteractionsFetchLimit,
+        MaxToolCallIterations, ToolCallTimeoutSeconds,
+        MaxOutputLines, MaxOutputBytes, SchemaValidationEnabled);
 
     private void CheckDirty()
     {
@@ -197,6 +239,40 @@ public partial class SettingsViewModel : ObservableObject
     {
         if (_isLoading) return;
         RecentInteractionsFetchLimitError = ConfigValidator.ValidateRecentInteractionsFetchLimit(value);
+        CheckDirty();
+    }
+
+    partial void OnMaxToolCallIterationsChanged(int value)
+    {
+        if (_isLoading) return;
+        MaxToolCallIterationsError = ConfigValidator.ValidateMaxToolCallIterations(value);
+        CheckDirty();
+    }
+
+    partial void OnToolCallTimeoutSecondsChanged(int value)
+    {
+        if (_isLoading) return;
+        ToolCallTimeoutSecondsError = ConfigValidator.ValidateToolCallTimeoutSeconds(value);
+        CheckDirty();
+    }
+
+    partial void OnMaxOutputLinesChanged(int value)
+    {
+        if (_isLoading) return;
+        MaxOutputLinesError = ConfigValidator.ValidateMaxOutputLines(value);
+        CheckDirty();
+    }
+
+    partial void OnMaxOutputBytesChanged(int value)
+    {
+        if (_isLoading) return;
+        MaxOutputBytesError = ConfigValidator.ValidateMaxOutputBytes(value);
+        CheckDirty();
+    }
+
+    partial void OnSchemaValidationEnabledChanged(bool value)
+    {
+        if (_isLoading) return;
         CheckDirty();
     }
 
@@ -462,7 +538,9 @@ public partial class SettingsViewModel : ObservableObject
         string CloudProvider, string CloudModel,
         string GeminiApiKey, string AnthropicApiKey, string OpenAiApiKey,
         string EmbeddingsModel, decimal DecayLambda,
-        int SummarizationInterval, int RecentInteractionsFetchLimit);
+        int SummarizationInterval, int RecentInteractionsFetchLimit,
+        int MaxToolCallIterations, int ToolCallTimeoutSeconds,
+        int MaxOutputLines, int MaxOutputBytes, bool SchemaValidationEnabled);
 }
 
 public sealed class McpServerRow

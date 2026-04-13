@@ -150,6 +150,85 @@ public class DoomLoopTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ChatStreamAsync_SameToolSameArgs_Twice_BreaksLoop()
+    {
+        // Arrange: streaming variant of ChatAsync_SameToolSameArgs_Twice_BreaksLoop
+        // Flow:
+        //   LLM call 1 → tool call (read_file /test.txt)
+        //   Tool executes → signature stored
+        //   LLM call 2 → identical tool call → doom loop fires
+        //   [DoomLoop] message injected
+        //   LLM call 3 (last-chance) → normal text
+        var callCount = 0;
+        const string toolCallResponse = """[TOOL_CALL: {"name":"read_file","arguments":{"path":"/test.txt"}}]""";
+        const string finalAnswer = "Here is my final answer based on what I know.";
+
+        var fakeToolExecutor = new FakeToolExecutor((_, _, _) => "file content here");
+
+        var agent = CreateAgent(lastUserMessage =>
+        {
+            callCount++;
+            return callCount <= 2 ? toolCallResponse : finalAnswer;
+        }, fakeToolExecutor);
+
+        // Act: collect streamed tokens
+        var tokens = new List<string>();
+        await foreach (var token in agent.ChatStreamAsync("Read the test file"))
+        {
+            tokens.Add(token);
+        }
+        var fullOutput = string.Join("", tokens);
+
+        // Assert: doom loop fired, final answer streamed after last-chance call
+        Assert.Equal(3, callCount);
+        Assert.Contains("[Executing tool: read_file...]", fullOutput);
+        Assert.Contains("final answer", fullOutput);
+    }
+
+    [Fact]
+    public async Task ChatAsync_ThreeToolCalls_DifferentTools_NoDoomLoop()
+    {
+        // Arrange: 3 different tools in sequence, no doom loop
+        // Flow:
+        //   LLM call 1 → read_file
+        //   LLM call 2 → list_directory
+        //   LLM call 3 → search (max iterations = 3, so this is the last tool)
+        //   MaxToolCallIterations reached → loop exits with last tool result context
+        var callCount = 0;
+        const string readFileCall = """[TOOL_CALL: {"name":"read_file","arguments":{"path":"/a.txt"}}]""";
+        const string listDirCall = """[TOOL_CALL: {"name":"list_directory","arguments":{"path":"/"}}]""";
+        const string searchCall = """[TOOL_CALL: {"name":"search","arguments":{"query":"test"}}]""";
+
+        var toolInvocations = new List<string>();
+        var fakeToolExecutor = new FakeToolExecutor((_, toolName, _) =>
+        {
+            toolInvocations.Add(toolName);
+            return $"Result from {toolName}";
+        });
+
+        var agent = CreateAgent(lastUserMessage =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => readFileCall,
+                2 => listDirCall,
+                3 => searchCall,
+                _ => "Final answer after all three tools."
+            };
+        }, fakeToolExecutor);
+
+        // Act
+        var response = await agent.ChatAsync("Read file, list dir, and search");
+
+        // Assert: all 3 tools invoked, no doom loop (all different signatures)
+        Assert.Equal(3, toolInvocations.Count);
+        Assert.Contains("read_file", toolInvocations);
+        Assert.Contains("list_directory", toolInvocations);
+        Assert.Contains("search", toolInvocations);
+    }
+
+    [Fact]
     public async Task ChatAsync_SameToolDifferentArgs_NoDoomLoop()
     {
         // Arrange
