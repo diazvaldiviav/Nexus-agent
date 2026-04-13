@@ -127,7 +127,13 @@ nexus-agent/
 │   │   ├── ToolRegistry.cs      # Dynamic tool registry (ConcurrentDictionary, thread-safe) + ToolResolution record + ResolveTool() fuzzy name resolution (exact → case-insensitive → Levenshtein ≤2 → fail)
 │   │   ├── McpToolExecutor.cs   # IToolExecutor impl: depends on IMcpClientManager (not concrete), routes tool calls through MCP, uses ResolveTool() for fuzzy name matching
 │   │   ├── SchemaValidator.cs   # ISchemaValidator impl: validates tool args against InputSchema (required check, type coercion string→bool/number/array, unknown arg stripping)
-│   │   └── McpServiceCollectionExtensions.cs # AddNexusMcp() DI extension
+│   │   ├── McpServiceCollectionExtensions.cs # AddNexusMcp() DI extension
+│   │   └── ToolFiltering/       # Tool complexity classification for small-model filtering
+│   │       ├── ToolComplexityTier.cs        # Enum: Simple, Moderate, Complex
+│   │       ├── ToolCallingTier.cs           # Enum: Limited, Capable, Full (model capability tier)
+│   │       ├── ToolComplexityScore.cs       # Record: 7-field scoring result (ToolName, Score, Tier, RequiredParamCount, TotalParamCount, MaxNestingDepth, HasArrayOfObjects)
+│   │       ├── IToolComplexityClassifier.cs # Interface: Classify(ToolDefinition) → ToolComplexityScore
+│   │       └── ToolComplexityClassifier.cs  # Sealed stateless classifier: weighted score formula (0.15*req+0.08*total+0.25*depth+0.35*arrayOfObj+0.05*enum+0.15*semantic+0.05*optExcess), tier thresholds (<0.50=Simple, <0.80=Moderate, >=0.80=Complex), recursive nesting depth (cap 5), array-of-objects/enum/semantic detection
 │   │
 │   ├── Nexus.Desktop/           # Avalonia UI (MVVM)
 │   │   ├── Views/               # AXAML views
@@ -237,7 +243,7 @@ nexus-agent/
 ├── tests/
 │   ├── Nexus.Memory.Tests/      # Memory layer tests
 │   ├── Nexus.Core.Tests/        # Core orchestration tests
-│   ├── Nexus.Integration.Tests/ # End-to-end tests
+│   ├── Nexus.Integration.Tests/ # End-to-end tests + ToolComplexityClassifierTests (14 tests: null/flat/nested/array-of-objects/enum/semantic/depth-cap/real-schema)
 │   ├── Nexus.Desktop.Tests/     # Desktop ViewModel tests (Avalonia.Headless.XUnit)
 │   ├── Nexus.Hardware.Tests/    # Hardware tests: enums, envelopes, profile, classifier, WmiCpuProfiler, Win32RamProfiler, DxgiGpuProfiler, WindowsHostProfiler, LhmSensorMonitor, PerfCounterMonitor, DI registration [Trait("Category","Integration")], records (164 tests)
 │   └── Nexus.Models.Tests/      # Model domain tests: 15 enum tests, DistributionProfile (5), ModelExecutionProfile (4), ModelCandidate (7), WorkloadIntentProfile (7), ModelNormalizer (18), CuratedCatalog (15), DI registration (6) — 77 tests
