@@ -197,4 +197,33 @@ public class PromptBuilderTests : IAsyncLifetime
         Assert.Contains("Summarize", prompt);
         Assert.Contains(conversationText, prompt);
     }
+
+    [Fact]
+    public async Task BuildSystemPromptAsync_WithModelName_ForwardsToToolExecutor()
+    {
+        // Arrange
+        var fakeExecutor = new FakeToolExecutor();
+        var builder = CreateBuilder(fakeExecutor);
+
+        // Act
+        await builder.BuildSystemPromptAsync("hello", "qwen3:1.7b");
+
+        // Assert
+        Assert.Equal("qwen3:1.7b", fakeExecutor.LastModelName);
+    }
+
+    [Fact]
+    public async Task BuildSystemPromptAsync_NullModelName_FallsBackToUnfiltered()
+    {
+        // Arrange
+        var fakeExecutor = new FakeToolExecutor();
+        var builder = CreateBuilder(fakeExecutor);
+
+        // Act
+        var prompt = await builder.BuildSystemPromptAsync("hello", modelName: null);
+
+        // Assert
+        Assert.Null(fakeExecutor.LastModelName);
+        Assert.Contains("# Available Tools", prompt);
+    }
 }

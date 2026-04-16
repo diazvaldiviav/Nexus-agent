@@ -13,8 +13,16 @@ public sealed class FakeToolExecutor : IToolExecutor
 
     public bool HasTools => true;
 
+    public string? LastModelName { get; private set; }
+
     public string GetToolDefinitionsForPrompt() =>
         "- read_file: Reads a file\n  Parameters: {\"path\": \"string\"}";
+
+    public string GetToolDefinitionsForPrompt(string? modelName)
+    {
+        LastModelName = modelName;
+        return GetToolDefinitionsForPrompt();
+    }
 
     public Task<string> InvokeToolAsync(
         string serverName,

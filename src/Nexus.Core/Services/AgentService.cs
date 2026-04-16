@@ -77,12 +77,12 @@ public class AgentService : IAgentService
 
         _conversationHistory.Add(new ConversationMessage { Role = "user", Content = userMessage });
 
-        var systemPrompt = await _promptBuilder.BuildSystemPromptAsync(userMessage, cancellationToken);
-        _logger?.LogDebug("System prompt ({Length} chars), tools available: {HasTools}",
-            systemPrompt.Length, _toolExecutor?.HasTools ?? false);
-
         var useCloud = _modelRouter.IsCloud(TaskType.MemoryQueryResponse);
         var modelConfig = useCloud ? _config.Models.Cloud : _config.Models.Local;
+
+        var systemPrompt = await _promptBuilder.BuildSystemPromptAsync(userMessage, modelConfig.Model, cancellationToken);
+        _logger?.LogDebug("System prompt ({Length} chars), tools available: {HasTools}",
+            systemPrompt.Length, _toolExecutor?.HasTools ?? false);
 
         // Thread safety: _conversationHistory is mutated in-place by CompactIfNeededAsync.
         // This is safe because background extraction uses historySnapshot (a copy via ToList()),
@@ -286,12 +286,12 @@ public class AgentService : IAgentService
 
         _conversationHistory.Add(new ConversationMessage { Role = "user", Content = userMessage });
 
-        var systemPrompt = await _promptBuilder.BuildSystemPromptAsync(userMessage, cancellationToken);
-        _logger?.LogDebug("Stream system prompt ({Length} chars), tools available: {HasTools}",
-            systemPrompt.Length, _toolExecutor?.HasTools ?? false);
-
         var useCloud = _modelRouter.IsCloud(TaskType.MemoryQueryResponse);
         var modelConfig = useCloud ? _config.Models.Cloud : _config.Models.Local;
+
+        var systemPrompt = await _promptBuilder.BuildSystemPromptAsync(userMessage, modelConfig.Model, cancellationToken);
+        _logger?.LogDebug("Stream system prompt ({Length} chars), tools available: {HasTools}",
+            systemPrompt.Length, _toolExecutor?.HasTools ?? false);
 
         if (_contextWindowManager is not null)
             await _contextWindowManager.CompactIfNeededAsync(

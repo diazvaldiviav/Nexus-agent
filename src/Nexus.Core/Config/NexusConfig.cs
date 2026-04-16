@@ -140,6 +140,7 @@ public class McpConfig
     public bool TypeCoercionEnabled { get; set; } = true;
     public int MaxOutputLines { get; set; } = 200;
     public int MaxOutputBytes { get; set; } = 32000;
+    public bool ToolFilteringEnabled { get; set; } = false;
     public List<McpServerEntry> Servers { get; set; } = new();
 }
 

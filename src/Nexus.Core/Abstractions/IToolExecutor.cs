@@ -12,6 +12,12 @@ public interface IToolExecutor
     string GetToolDefinitionsForPrompt();
 
     /// <summary>
+    /// Returns tool definitions filtered/annotated for the given model's capability tier.
+    /// Default implementation ignores modelName and falls back to the unfiltered version.
+    /// </summary>
+    string GetToolDefinitionsForPrompt(string? modelName) => GetToolDefinitionsForPrompt();
+
+    /// <summary>
     /// Invokes a tool on the specified MCP server with the given parameters.
     /// </summary>
     Task<string> InvokeToolAsync(

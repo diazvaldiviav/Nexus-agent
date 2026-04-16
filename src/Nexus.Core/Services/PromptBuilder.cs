@@ -31,7 +31,7 @@ public class PromptBuilder
         _toolExecutor = toolExecutor;
     }
 
-    public async Task<string> BuildSystemPromptAsync(string userQuery, CancellationToken cancellationToken = default)
+    public async Task<string> BuildSystemPromptAsync(string userQuery, string? modelName = null, CancellationToken cancellationToken = default)
     {
         var context = await _memoryContextBuilder.BuildContextAsync(userQuery, cancellationToken);
         var memorySection = _memoryContextBuilder.FormatContextAsPrompt(context);
@@ -54,7 +54,7 @@ public class PromptBuilder
         {
             builder.AppendLine();
             builder.AppendLine("# Available Tools");
-            builder.AppendLine(_toolExecutor.GetToolDefinitionsForPrompt());
+            builder.AppendLine(_toolExecutor.GetToolDefinitionsForPrompt(modelName));
             builder.AppendLine();
             builder.AppendLine("# CRITICAL: How to Use Tools");
             builder.AppendLine("When the user asks you to perform an action (create a file, read a file, list a directory, etc.), you MUST use the appropriate tool.");

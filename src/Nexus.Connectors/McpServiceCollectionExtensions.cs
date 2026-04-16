@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Nexus.Connectors.ToolFiltering;
 using Nexus.Core.Abstractions;
 using Nexus.Core.Config;
 
@@ -23,11 +24,16 @@ public static class McpServiceCollectionExtensions
 
         services.AddSingleton<McpLifecycleService>();
 
+        services.AddSingleton<IToolComplexityClassifier, ToolComplexityClassifier>();
+        services.AddSingleton<ToolPromptFormatter>();
+
         services.AddSingleton<IToolExecutor>(sp =>
             new McpToolExecutor(
                 sp.GetRequiredService<IMcpClientManager>(),
                 sp.GetRequiredService<ToolRegistry>(),
-                sp.GetService<ILogger<McpToolExecutor>>()));
+                sp.GetService<ILogger<McpToolExecutor>>(),
+                sp.GetRequiredService<ToolPromptFormatter>(),
+                sp.GetRequiredService<NexusConfig>().Mcp.ToolFilteringEnabled));
 
         services.AddSingleton<IToolArgumentValidator>(sp =>
             new PathValidator(

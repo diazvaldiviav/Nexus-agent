@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Nexus.Connectors.ToolFiltering;
 using Nexus.Core.Abstractions;
 
 namespace Nexus.Connectors;
@@ -12,15 +13,21 @@ public class McpToolExecutor : IToolExecutor
     private readonly IMcpClientManager _clientManager;
     private readonly ToolRegistry _toolRegistry;
     private readonly ILogger<McpToolExecutor>? _logger;
+    private readonly ToolPromptFormatter? _toolPromptFormatter;
+    private readonly bool _toolFilteringEnabled;
 
     public McpToolExecutor(
         IMcpClientManager clientManager,
         ToolRegistry toolRegistry,
-        ILogger<McpToolExecutor>? logger = null)
+        ILogger<McpToolExecutor>? logger = null,
+        ToolPromptFormatter? toolPromptFormatter = null,
+        bool toolFilteringEnabled = false)
     {
         _clientManager = clientManager ?? throw new ArgumentNullException(nameof(clientManager));
         _toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
         _logger = logger;
+        _toolPromptFormatter = toolPromptFormatter;
+        _toolFilteringEnabled = toolFilteringEnabled;
     }
 
     public bool HasTools => _toolRegistry.Tools.Count > 0;
@@ -28,6 +35,18 @@ public class McpToolExecutor : IToolExecutor
     public string GetToolDefinitionsForPrompt()
     {
         return _toolRegistry.GetToolDefinitionsForPrompt();
+    }
+
+    public string GetToolDefinitionsForPrompt(string? modelName)
+    {
+        if (!_toolFilteringEnabled || _toolPromptFormatter is null || string.IsNullOrWhiteSpace(modelName))
+            return GetToolDefinitionsForPrompt();
+
+        var tools = _toolRegistry.Tools.Values;
+        if (!tools.Any())
+            return string.Empty;
+
+        return _toolPromptFormatter.Format(tools, modelName);
     }
 
     public async Task<string> InvokeToolAsync(

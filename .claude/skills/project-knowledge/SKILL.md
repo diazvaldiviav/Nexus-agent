@@ -97,7 +97,7 @@ nexus-agent/
 │   │   ├── Abstractions/        # Interfaces (Nexus.Core.Abstractions)
 │   │   │   ├── IAgentService.cs    # ChatStreamAsync, ClearHistoryAsync, FlushPendingExtractionAsync
 │   │   │   ├── ILlmProvider.cs     # ChatAsync, ChatStreamAsync
-│   │   │   ├── IToolExecutor.cs    # Cross-layer (impl in Connectors)
+│   │   │   ├── IToolExecutor.cs    # Cross-layer (impl in Connectors). GetToolDefinitionsForPrompt() + GetToolDefinitionsForPrompt(string? modelName) default interface method for model-aware tool filtering
 │   │   │   └── ISchemaValidator.cs  # Schema validation contract + SchemaValidationResult (impl in Connectors)
 │   │   ├── Providers/           # LLM providers (Nexus.Core.Providers)
 │   │   │   ├── OllamaLlmProvider.cs
@@ -111,7 +111,7 @@ nexus-agent/
 │   │   │   ├── ContextWindowManager.cs # Context window estimation + conversation compaction
 │   │   │   ├── ModelRouter.cs       # Local vs cloud selection
 │   │   │   ├── OutputTruncator.cs   # Static: head/tail line truncation + UTF-8 safe byte truncation (TruncatedOutput record)
-│   │   │   ├── PromptBuilder.cs     # Memory context + tool definitions
+│   │   │   ├── PromptBuilder.cs     # Memory context + tool definitions. BuildSystemPromptAsync(userQuery, modelName?, ct) passes modelName to IToolExecutor for model-aware tool filtering
 │   │   │   └── ToolCallParser.cs    # Multi-format tool call parser: [TOOL_CALL:] marker + <tool_call> XML + raw JSON fallback, markdown fence stripping, brace-walking state machine (WalkJsonObject 3-tuple with endedInString), mid-string JSON repair (closes unclosed quotes before appending braces), IsParsableJson guard, TryParseAll multi-tool extraction with ParsedToolCall position tracking + IsOverlapping dedup, TryParseJson shared helper
 │   │   ├── Models/              # POCOs (Nexus.Core.Models)
 │   │   │   ├── AgentResponse.cs
@@ -125,7 +125,7 @@ nexus-agent/
 │   ├── Nexus.Connectors/        # External tool connectivity (MCP SDK)
 │   │   ├── McpClientManager.cs  # MCP client: stdio/SSE transport, tool discovery, invocation
 │   │   ├── ToolRegistry.cs      # Dynamic tool registry (ConcurrentDictionary, thread-safe) + ToolResolution record + ResolveTool() fuzzy name resolution (exact → case-insensitive → Levenshtein ≤2 → fail)
-│   │   ├── McpToolExecutor.cs   # IToolExecutor impl: depends on IMcpClientManager (not concrete), routes tool calls through MCP, uses ResolveTool() for fuzzy name matching
+│   │   ├── McpToolExecutor.cs   # IToolExecutor impl: depends on IMcpClientManager (not concrete), routes tool calls through MCP, uses ResolveTool() for fuzzy name matching. GetToolDefinitionsForPrompt(string? modelName) override: when ToolFilteringEnabled + modelName non-empty → delegates to ToolPromptFormatter.Format(); otherwise falls back to unfiltered ToolRegistry output
 │   │   ├── SchemaValidator.cs   # ISchemaValidator impl: validates tool args against InputSchema (required check, type coercion string→bool/number/array, unknown arg stripping)
 │   │   ├── McpServiceCollectionExtensions.cs # AddNexusMcp() DI extension
 │   │   └── ToolFiltering/       # Tool complexity classification for small-model filtering
@@ -133,7 +133,9 @@ nexus-agent/
 │   │       ├── ToolCallingTier.cs           # Enum: Limited, Capable, Full (model capability tier)
 │   │       ├── ToolComplexityScore.cs       # Record: 7-field scoring result (ToolName, Score, Tier, RequiredParamCount, TotalParamCount, MaxNestingDepth, HasArrayOfObjects)
 │   │       ├── IToolComplexityClassifier.cs # Interface: Classify(ToolDefinition) → ToolComplexityScore
-│   │       └── ToolComplexityClassifier.cs  # Sealed stateless classifier: weighted score formula (0.15*req+0.08*total+0.25*depth+0.35*arrayOfObj+0.05*enum+0.15*semantic+0.05*optExcess), tier thresholds (<0.50=Simple, <0.80=Moderate, >=0.80=Complex), recursive nesting depth (cap 5), array-of-objects/enum/semantic detection
+│   │       ├── ToolComplexityClassifier.cs  # Sealed stateless classifier: weighted score formula (0.15*req+0.08*total+0.25*depth+0.35*arrayOfObj+0.05*enum+0.15*semantic+0.05*optExcess), tier thresholds (<0.50=Simple, <0.80=Moderate, >=0.80=Complex), recursive nesting depth (cap 5), array-of-objects/enum/semantic detection
+│   │       ├── ToolCapabilityResolver.cs   # Static: Resolve(string? modelName) → ToolCallingTier via regex param-count extraction ((\d+(\.\d+)?)\s*b(?![a-z])), thresholds <3→Limited, <8→Capable, ≥8→Full, safe default Full
+│   │       └── ToolPromptFormatter.cs    # Sealed: Format(tools, modelName) → filtered prompt string. Combines ToolComplexityClassifier + ToolCapabilityResolver to partition tools into included (with optional hints) and excluded (with 3-tier BuildExclusionHint: WorkflowOverrides → same-server Simple → fallback). Full-tier parity with ToolRegistry.GetToolDefinitionsForPrompt()
 │   │
 │   ├── Nexus.Desktop/           # Avalonia UI (MVVM)
 │   │   ├── Views/               # AXAML views
@@ -243,7 +245,7 @@ nexus-agent/
 ├── tests/
 │   ├── Nexus.Memory.Tests/      # Memory layer tests
 │   ├── Nexus.Core.Tests/        # Core orchestration tests
-│   ├── Nexus.Integration.Tests/ # End-to-end tests + ToolComplexityClassifierTests (14 tests: null/flat/nested/array-of-objects/enum/semantic/depth-cap/real-schema)
+│   ├── Nexus.Integration.Tests/ # End-to-end tests + ToolComplexityClassifierTests (14 tests) + ToolCapabilityResolverTests (13 tests) + ToolPromptFormatterTests (11 tests: Full/Capable/Limited tier filtering, workflow overrides, dynamic same-server alternatives, no-alternatives fallback, hints, empty list, Full-tier parity) + PromptBuilderTests (12 tests: includes 2 model-name-forwarding tests for tool filtering wiring)
 │   ├── Nexus.Desktop.Tests/     # Desktop ViewModel tests (Avalonia.Headless.XUnit)
 │   ├── Nexus.Hardware.Tests/    # Hardware tests: enums, envelopes, profile, classifier, WmiCpuProfiler, Win32RamProfiler, DxgiGpuProfiler, WindowsHostProfiler, LhmSensorMonitor, PerfCounterMonitor, DI registration [Trait("Category","Integration")], records (164 tests)
 │   └── Nexus.Models.Tests/      # Model domain tests: 15 enum tests, DistributionProfile (5), ModelExecutionProfile (4), ModelCandidate (7), WorkloadIntentProfile (7), ModelNormalizer (18), CuratedCatalog (15), DI registration (6) — 77 tests
@@ -324,8 +326,12 @@ services.AddSingleton<IAgentService>(sp => sp.GetRequiredService<AgentService>()
 // MCP connectivity (registered separately via AddNexusMcp()):
 services.AddSingleton<McpClientManager>();  // MCP SDK client (stdio + SSE transports)
 services.AddSingleton<ToolRegistry>();      // Dynamic tool registry from MCP servers
+services.AddSingleton<IToolComplexityClassifier, ToolComplexityClassifier>(); // Stateless tool schema scorer
+services.AddSingleton<ToolPromptFormatter>();  // Filters/annotates tools per model capability tier
 services.AddSingleton<IToolExecutor>(sp => new McpToolExecutor(
-    sp.GetRequiredService<IMcpClientManager>(), ...)); // Cross-layer: interface in Core, impl in Connectors; depends on IMcpClientManager abstraction
+    sp.GetRequiredService<IMcpClientManager>(), ...,
+    sp.GetRequiredService<ToolPromptFormatter>(),
+    config.Mcp.ToolFilteringEnabled)); // Cross-layer: interface in Core, impl in Connectors; depends on IMcpClientManager abstraction. GetToolDefinitionsForPrompt(modelName) delegates to ToolPromptFormatter when filtering enabled
 services.AddSingleton<ISchemaValidator>(sp => new SchemaValidator(...)); // Validates tool args against InputSchema (required, types, coercion)
 ```
 
@@ -344,7 +350,7 @@ public class NexusConfig
 // ModelsConfig has: Local, Cloud, Routing, Gemini?, Anthropic?, OpenAi?
 // Per-provider keys: models.gemini.api_key, models.anthropic.api_key, models.openai.api_key
 // Resolved via ModelsConfig.GetApiKey("provider") — 3-tier fallback
-// McpConfig has: List<McpServerEntry> Servers, MaxToolCallIterations (int, default 3), ToolCallTimeoutSeconds (int, default 30), SchemaValidationEnabled (bool, default true), TypeCoercionEnabled (bool, default true), MaxOutputLines (int, default 200), MaxOutputBytes (int, default 32000)
+// McpConfig has: List<McpServerEntry> Servers, MaxToolCallIterations (int, default 3), ToolCallTimeoutSeconds (int, default 30), SchemaValidationEnabled (bool, default true), TypeCoercionEnabled (bool, default true), MaxOutputLines (int, default 200), MaxOutputBytes (int, default 32000), ToolFilteringEnabled (bool, default false — gates small-model tool complexity filtering)
 // McpServerEntry has: Name, Transport ("stdio"|"sse"), Command?, Args (List<string>), Url?, Env (Dict<string,string>)
 // ModelProviderConfig has: Provider, Model, Endpoint?, ApiKey?, ContextWindow (int, default 8192), MaxOutputTokens (int, default 2048)
 // MemoryConfig has: SummarizationInterval (int, default 10), RecentInteractionsFetchLimit (int, default 5), DeduplicationThreshold (double, default 0.85), ArchivePath (string, default "~/.nexus/archive/"), CompressionEnabled (bool, default true), ArchiveThresholdDays (int, default 90), ContextCompactionThreshold (double, default 0.80), CompactionKeepRecentMessages (int, default 4)
