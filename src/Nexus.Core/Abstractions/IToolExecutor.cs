@@ -15,6 +15,7 @@ public interface IToolExecutor
     /// Returns tool definitions filtered/annotated for the given model's capability tier.
     /// Default implementation ignores modelName and falls back to the unfiltered version.
     /// </summary>
+    /// <param name="modelName">The model name used to determine tool capability tier for filtering.</param>
     string GetToolDefinitionsForPrompt(string? modelName) => GetToolDefinitionsForPrompt();
 
     /// <summary>

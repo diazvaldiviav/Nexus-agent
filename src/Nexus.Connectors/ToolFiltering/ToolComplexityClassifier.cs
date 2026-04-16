@@ -3,6 +3,11 @@ using Microsoft.Extensions.Logging;
 
 namespace Nexus.Connectors.ToolFiltering;
 
+/// <summary>
+/// Stateless classifier that scores tool input schemas by structural complexity.
+/// Uses a weighted formula combining parameter counts, nesting depth,
+/// array-of-objects presence, enum constraints, and semantic hints.
+/// </summary>
 public sealed class ToolComplexityClassifier : IToolComplexityClassifier
 {
     private static readonly string[] SemanticDescriptionKeywords =
@@ -10,6 +15,10 @@ public sealed class ToolComplexityClassifier : IToolComplexityClassifier
 
     private static readonly string[] SemanticNamePatterns =
         ["edit_file", "multi_edit"];
+
+    internal const int MaxNestingDepthCap = 5;
+    internal const double SimpleTierThreshold = 0.50;
+    internal const double ModerateTierThreshold = 0.80;
 
     private readonly ILogger<ToolComplexityClassifier>? _logger;
 
@@ -66,7 +75,11 @@ public sealed class ToolComplexityClassifier : IToolComplexityClassifier
         var requiredCount = required.Count;
         var optionalCount = Math.Max(0, totalParams - requiredCount);
 
-        // Weighted score: 0.15*req + 0.08*total + 0.25*depth + 0.35*arrayOfObj + 0.05*enum + 0.15*semantic + 0.05*optionalExcess
+        // Weight rationale: arrayOfObjects (0.35) dominates because it is the strongest
+        // predictor of small-model failure; nesting depth (0.25) is second because JSON
+        // structure confusion causes malformed calls; semantic hints (0.15) and required
+        // params (0.15) are moderate signals; total params (0.08), enum (0.05) and
+        // optional excess (0.05) are minor adjustments.
         double score = 0.15 * requiredCount
                      + 0.08 * totalParams
                      + 0.25 * Math.Max(0, maxNestingDepth - 1)
@@ -75,9 +88,13 @@ public sealed class ToolComplexityClassifier : IToolComplexityClassifier
                      + (hasSemanticHint ? 0.15 : 0)
                      + 0.05 * Math.Max(0, optionalCount - 3);
 
-        var tier = score < 0.50 ? ToolComplexityTier.Simple
-                 : score < 0.80 ? ToolComplexityTier.Moderate
+        var tier = score < SimpleTierThreshold ? ToolComplexityTier.Simple
+                 : score < ModerateTierThreshold ? ToolComplexityTier.Moderate
                  : ToolComplexityTier.Complex;
+
+        _logger?.LogDebug(
+            "Classified '{ToolName}': score={Score:F2}, tier={Tier}, depth={Depth}, arrayOfObj={AoO}",
+            tool.Name, score, tier, maxNestingDepth, hasArrayOfObjects);
 
         return new ToolComplexityScore(
             ToolName: tool.Name,
@@ -91,7 +108,7 @@ public sealed class ToolComplexityClassifier : IToolComplexityClassifier
 
     private int ComputeMaxNestingDepth(JsonElement schema, int currentDepth)
     {
-        if (currentDepth >= 5)
+        if (currentDepth >= MaxNestingDepthCap)
             return currentDepth;
 
         if (!schema.TryGetProperty("properties", out var props) ||
@@ -198,17 +215,17 @@ public sealed class ToolComplexityClassifier : IToolComplexityClassifier
     {
         foreach (var keyword in SemanticDescriptionKeywords)
         {
-            if (tool.Description.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+            if (tool.Description?.Contains(keyword, StringComparison.OrdinalIgnoreCase) == true)
                 return true;
         }
 
         foreach (var pattern in SemanticNamePatterns)
         {
-            if (tool.Name.Contains(pattern, StringComparison.OrdinalIgnoreCase))
+            if (tool.Name?.Contains(pattern, StringComparison.OrdinalIgnoreCase) == true)
                 return true;
         }
 
-        if (tool.Name.StartsWith("patch_", StringComparison.OrdinalIgnoreCase))
+        if (tool.Name?.StartsWith("patch_", StringComparison.OrdinalIgnoreCase) == true)
             return true;
 
         return false;

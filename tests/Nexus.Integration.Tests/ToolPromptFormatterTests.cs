@@ -362,4 +362,26 @@ public class ToolPromptFormatterTests
         Assert.DoesNotContain("double-check your JSON", result);
         Assert.DoesNotContain("hidden", result);
     }
+
+    // -------------------------------------------------------------------------
+    // 12. Tool with null InputSchema → renders without parameters section
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void Format_NullInputSchema_RendersWithoutParameters()
+    {
+        // Arrange — tool with no schema at all
+        var tools = new[]
+        {
+            new ToolDefinition { Name = "no_schema_tool", Description = "No parameters", ServerName = "srv" }
+        };
+
+        // Act
+        var result = _formatter.Format(tools, "qwen3:1.7b");
+
+        // Assert
+        Assert.Contains("- no_schema_tool: No parameters", result);
+        Assert.DoesNotContain("REQUIRED", result);
+        Assert.DoesNotContain("optional", result);
+    }
 }

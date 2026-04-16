@@ -220,42 +220,45 @@ public class ToolRegistry : IToolRegistry
         sb.AppendLine("Available tools:");
 
         foreach (var tool in _tools.Values)
+            RenderToolToStringBuilder(sb, tool);
+
+        return sb.ToString();
+    }
+
+    internal static void RenderToolToStringBuilder(StringBuilder sb, ToolDefinition tool)
+    {
+        sb.AppendLine($"- {tool.Name}: {tool.Description}");
+
+        if (!tool.InputSchema.HasValue)
+            return;
+
+        var schema = tool.InputSchema.Value;
+        var required = new HashSet<string>(StringComparer.Ordinal);
+        if (schema.TryGetProperty("required", out var reqArray) &&
+            reqArray.ValueKind == JsonValueKind.Array)
         {
-            sb.AppendLine($"- {tool.Name}: {tool.Description}");
-
-            if (!tool.InputSchema.HasValue)
-                continue;
-
-            var schema = tool.InputSchema.Value;
-            var required = new HashSet<string>(StringComparer.Ordinal);
-            if (schema.TryGetProperty("required", out var reqArray) &&
-                reqArray.ValueKind == JsonValueKind.Array)
+            foreach (var item in reqArray.EnumerateArray())
             {
-                foreach (var item in reqArray.EnumerateArray())
-                {
-                    var name = item.GetString();
-                    if (name is not null) required.Add(name);
-                }
-            }
-
-            if (schema.TryGetProperty("properties", out var props) &&
-                props.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var prop in props.EnumerateObject())
-                {
-                    var paramType = prop.Value.TryGetProperty("type", out var t)
-                        ? t.GetString() ?? "any"
-                        : "any";
-                    var desc = prop.Value.TryGetProperty("description", out var d)
-                        ? d.GetString() ?? ""
-                        : "";
-                    var reqTag = required.Contains(prop.Name) ? "REQUIRED" : "optional";
-
-                    sb.AppendLine($"    {prop.Name} ({paramType}, {reqTag}): {desc}");
-                }
+                var name = item.GetString();
+                if (name is not null) required.Add(name);
             }
         }
 
-        return sb.ToString();
+        if (schema.TryGetProperty("properties", out var props) &&
+            props.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var prop in props.EnumerateObject())
+            {
+                var paramType = prop.Value.TryGetProperty("type", out var t)
+                    ? t.GetString() ?? "any"
+                    : "any";
+                var desc = prop.Value.TryGetProperty("description", out var d)
+                    ? d.GetString() ?? ""
+                    : "";
+                var reqTag = required.Contains(prop.Name) ? "REQUIRED" : "optional";
+
+                sb.AppendLine($"    {prop.Name} ({paramType}, {reqTag}): {desc}");
+            }
+        }
     }
 }

@@ -19,6 +19,8 @@ public static class ConfigValidator
         AddIfNotNull(errors, "Mcp.ToolCallTimeoutSeconds", ValidateToolCallTimeoutSeconds(config.Mcp.ToolCallTimeoutSeconds));
         AddIfNotNull(errors, "Mcp.MaxOutputLines", ValidateMaxOutputLines(config.Mcp.MaxOutputLines));
         AddIfNotNull(errors, "Mcp.MaxOutputBytes", ValidateMaxOutputBytes(config.Mcp.MaxOutputBytes));
+        AddIfNotNull(errors, "Mcp.ToolFilteringEnabled",
+            ValidateToolFilteringEnabled(config.Mcp.ToolFilteringEnabled, config.Models.Local.Model));
         for (var i = 0; i < config.Mcp.Servers.Count; i++)
             AddIfNotNull(errors, $"Mcp.Servers[{i}]", ValidateMcpServerEntry(config.Mcp.Servers[i]));
         return new ValidationResult(errors);
@@ -49,6 +51,11 @@ public static class ConfigValidator
 
     public static string? ValidateMaxOutputBytes(int value)
         => value < 1000 || value > 500000 ? "MaxOutputBytes must be between 1000 and 500000." : null;
+
+    public static string? ValidateToolFilteringEnabled(bool enabled, string? localModel)
+        => enabled && string.IsNullOrWhiteSpace(localModel)
+            ? "Tool filtering is enabled but no local model is configured."
+            : null;
 
     public static string? ValidateMcpServerEntry(McpServerEntry entry)
     {

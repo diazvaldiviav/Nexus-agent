@@ -313,4 +313,52 @@ public class SettingsViewModelValidationTests
         Assert.Equal(65536, config.Mcp.MaxOutputBytes);
         Assert.False(config.Mcp.SchemaValidationEnabled);
     }
+
+    // ── ToolFilteringEnabled toggle ───────────────────────────────────────
+
+    [Fact]
+    public void Constructor_LoadsToolFilteringEnabled()
+    {
+        // Arrange
+        var config = new NexusConfig();
+        config.Models.Local.Endpoint = "http://localhost:11434";
+        config.Mcp.ToolFilteringEnabled = true;
+
+        // Act
+        var vm = new SettingsViewModel(config, CreateMcpLifecycleService());
+
+        // Assert
+        Assert.True(vm.ToolFilteringEnabled);
+    }
+
+    [Fact]
+    public void SaveSettings_WritesToolFilteringEnabledToConfig()
+    {
+        // Arrange
+        var config = new NexusConfig();
+        config.Models.Local.Endpoint = "http://localhost:11434";
+        var vm = new SettingsViewModel(config, CreateMcpLifecycleService());
+
+        vm.ToolFilteringEnabled = true;
+
+        // Act
+        vm.SaveSettingsCommand.Execute(null);
+
+        // Assert
+        Assert.True(config.Mcp.ToolFilteringEnabled);
+    }
+
+    [Fact]
+    public void ToolFilteringEnabled_Change_SetsDirty()
+    {
+        // Arrange
+        var vm = CreateVm();
+        Assert.False(vm.IsDirty);
+
+        // Act
+        vm.ToolFilteringEnabled = true;
+
+        // Assert
+        Assert.True(vm.IsDirty);
+    }
 }

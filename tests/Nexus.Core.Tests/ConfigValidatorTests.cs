@@ -395,4 +395,44 @@ public class ConfigValidatorTests
         Assert.NotNull(result.GetError("Mcp.Servers[1]"));
     }
 
+    // ── ValidateToolFilteringEnabled ───────────────────────────────────────
+
+    [Fact]
+    public void ValidateToolFilteringEnabled_EnabledWithModel_ReturnsNull()
+    {
+        var result = ConfigValidator.ValidateToolFilteringEnabled(true, "qwen3:14b");
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ValidateToolFilteringEnabled_EnabledWithoutModel_ReturnsError()
+    {
+        var result = ConfigValidator.ValidateToolFilteringEnabled(true, null);
+        Assert.NotNull(result);
+        Assert.Contains("local model", result, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateToolFilteringEnabled_Disabled_ReturnsNull()
+    {
+        var result = ConfigValidator.ValidateToolFilteringEnabled(false, null);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void Validate_ToolFilteringEnabledNoLocalModel_ReturnsError()
+    {
+        // Arrange
+        var config = new NexusConfig();
+        config.Mcp.ToolFilteringEnabled = true;
+        config.Models.Local.Model = "";
+
+        // Act
+        var result = ConfigValidator.Validate(config);
+
+        // Assert
+        Assert.False(result.IsValid);
+        Assert.NotNull(result.GetError("Mcp.ToolFilteringEnabled"));
+    }
+
 }

@@ -24,8 +24,12 @@ public static class McpServiceCollectionExtensions
 
         services.AddSingleton<McpLifecycleService>();
 
-        services.AddSingleton<IToolComplexityClassifier, ToolComplexityClassifier>();
-        services.AddSingleton<ToolPromptFormatter>();
+        services.AddSingleton<IToolComplexityClassifier>(sp =>
+            new ToolComplexityClassifier(sp.GetService<ILogger<ToolComplexityClassifier>>()));
+        services.AddSingleton(sp =>
+            new ToolPromptFormatter(
+                sp.GetRequiredService<IToolComplexityClassifier>(),
+                sp.GetService<ILogger<ToolPromptFormatter>>()));
 
         services.AddSingleton<IToolExecutor>(sp =>
             new McpToolExecutor(

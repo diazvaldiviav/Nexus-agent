@@ -133,9 +133,9 @@ nexus-agent/
 │   │       ├── ToolCallingTier.cs           # Enum: Limited, Capable, Full (model capability tier)
 │   │       ├── ToolComplexityScore.cs       # Record: 7-field scoring result (ToolName, Score, Tier, RequiredParamCount, TotalParamCount, MaxNestingDepth, HasArrayOfObjects)
 │   │       ├── IToolComplexityClassifier.cs # Interface: Classify(ToolDefinition) → ToolComplexityScore
-│   │       ├── ToolComplexityClassifier.cs  # Sealed stateless classifier: weighted score formula (0.15*req+0.08*total+0.25*depth+0.35*arrayOfObj+0.05*enum+0.15*semantic+0.05*optExcess), tier thresholds (<0.50=Simple, <0.80=Moderate, >=0.80=Complex), recursive nesting depth (cap 5), array-of-objects/enum/semantic detection
-│   │       ├── ToolCapabilityResolver.cs   # Static: Resolve(string? modelName) → ToolCallingTier via regex param-count extraction ((\d+(\.\d+)?)\s*b(?![a-z])), thresholds <3→Limited, <8→Capable, ≥8→Full, safe default Full
-│   │       └── ToolPromptFormatter.cs    # Sealed: Format(tools, modelName) → filtered prompt string. Combines ToolComplexityClassifier + ToolCapabilityResolver to partition tools into included (with optional hints) and excluded (with 3-tier BuildExclusionHint: WorkflowOverrides → same-server Simple → fallback). Full-tier parity with ToolRegistry.GetToolDefinitionsForPrompt()
+│   │       ├── ToolComplexityClassifier.cs  # Sealed classifier: weighted score formula (0.15*req+0.08*total+0.25*depth+0.35*arrayOfObj+0.05*enum+0.15*semantic+0.05*optExcess), named constants (SimpleTierThreshold=0.50, ModerateTierThreshold=0.80, MaxNestingDepthCap=5), null-safe Description/Name access, debug logging after score computation
+│   │       ├── ToolCapabilityResolver.cs   # Static: Resolve(string? modelName) → ToolCallingTier via regex param-count extraction, named constants (LimitedModelThreshold=3.0, CapableModelThreshold=8.0), safe default Full
+│   │       └── ToolPromptFormatter.cs    # Sealed: Format(tools, modelName) → filtered prompt string. ILogger support. Delegates tool rendering to ToolRegistry.RenderToolToStringBuilder(). Combines ToolComplexityClassifier + ToolCapabilityResolver to partition tools into included (with optional hints) and excluded (with 3-tier BuildExclusionHint: WorkflowOverrides → same-server Simple → fallback). Full-tier parity with ToolRegistry.GetToolDefinitionsForPrompt()
 │   │
 │   ├── Nexus.Desktop/           # Avalonia UI (MVVM)
 │   │   ├── Views/               # AXAML views
@@ -147,7 +147,7 @@ nexus-agent/
 │   │   │   ├── ChatViewModel.cs  # Chat MVVM: ChatMessage (ObservableObject, IsAssistantNormal computed) + streaming, HasMessages, SetExamplePromptCommand, error handling (HasError/ErrorMessage/ErrorDetail), RetryCommand, DismissErrorCommand, DispatchToUI virtual
 │   │   │   ├── ErrorClassifier.cs  # Static error classifier: HttpRequestException→connection, TaskCanceledException→timeout, unauthorized→apikey, default→generic
 │   │   │   ├── MemoryGraphViewModel.cs  # Graph VM: HasNodes computed property
-│   │   │   ├── SettingsViewModel.cs  # Settings MVVM: ConfigValidator integration, IsDirty/SettingsSnapshot dirty tracking (17-field record), CanSave guard, inline validation errors (Memory + MCP fields), ApiKeyWarning, HasError/HasSuccess banners, MCP tool settings (MaxToolCallIterations, ToolCallTimeoutSeconds, MaxOutputLines, MaxOutputBytes, SchemaValidationEnabled) with reactive OnChanged validation
+│   │   │   ├── SettingsViewModel.cs  # Settings MVVM: ConfigValidator integration, IsDirty/SettingsSnapshot dirty tracking (18-field record), CanSave guard, inline validation errors (Memory + MCP fields), ApiKeyWarning, HasError/HasSuccess banners, MCP tool settings (MaxToolCallIterations, ToolCallTimeoutSeconds, MaxOutputLines, MaxOutputBytes, SchemaValidationEnabled, ToolFilteringEnabled) with reactive OnChanged validation
 │   │   │   └── ActionLogViewModel.cs  # Action log VM: HasActions computed property, DispatchToUI virtual
 │   │   ├── Layout/
 │   │   │   └── ForceDirectedLayout.cs  # Fruchterman-Reingold force-directed graph layout
@@ -245,7 +245,7 @@ nexus-agent/
 ├── tests/
 │   ├── Nexus.Memory.Tests/      # Memory layer tests
 │   ├── Nexus.Core.Tests/        # Core orchestration tests
-│   ├── Nexus.Integration.Tests/ # End-to-end tests + ToolComplexityClassifierTests (14 tests) + ToolCapabilityResolverTests (13 tests) + ToolPromptFormatterTests (11 tests: Full/Capable/Limited tier filtering, workflow overrides, dynamic same-server alternatives, no-alternatives fallback, hints, empty list, Full-tier parity) + PromptBuilderTests (12 tests: includes 2 model-name-forwarding tests for tool filtering wiring)
+│   ├── Nexus.Integration.Tests/ # End-to-end tests + ToolComplexityClassifierTests (18 tests: +patch_ prefix, null description, malformed schema, null InputSchema) + ToolCapabilityResolverTests (13 tests) + ToolPromptFormatterTests (12 tests: +null InputSchema rendering) + McpToolExecutorFilteringTests (5 tests: disabled/null-formatter/empty-model fallback, happy path, empty tools) + PromptBuilderTests (12 tests: includes 2 model-name-forwarding tests for tool filtering wiring)
 │   ├── Nexus.Desktop.Tests/     # Desktop ViewModel tests (Avalonia.Headless.XUnit)
 │   ├── Nexus.Hardware.Tests/    # Hardware tests: enums, envelopes, profile, classifier, WmiCpuProfiler, Win32RamProfiler, DxgiGpuProfiler, WindowsHostProfiler, LhmSensorMonitor, PerfCounterMonitor, DI registration [Trait("Category","Integration")], records (164 tests)
 │   └── Nexus.Models.Tests/      # Model domain tests: 15 enum tests, DistributionProfile (5), ModelExecutionProfile (4), ModelCandidate (7), WorkloadIntentProfile (7), ModelNormalizer (18), CuratedCatalog (15), DI registration (6) — 77 tests
@@ -326,8 +326,12 @@ services.AddSingleton<IAgentService>(sp => sp.GetRequiredService<AgentService>()
 // MCP connectivity (registered separately via AddNexusMcp()):
 services.AddSingleton<McpClientManager>();  // MCP SDK client (stdio + SSE transports)
 services.AddSingleton<ToolRegistry>();      // Dynamic tool registry from MCP servers
-services.AddSingleton<IToolComplexityClassifier, ToolComplexityClassifier>(); // Stateless tool schema scorer
-services.AddSingleton<ToolPromptFormatter>();  // Filters/annotates tools per model capability tier
+services.AddSingleton<IToolComplexityClassifier>(sp =>
+    new ToolComplexityClassifier(sp.GetService<ILogger<ToolComplexityClassifier>>())); // Stateless tool schema scorer + debug logging
+services.AddSingleton(sp =>
+    new ToolPromptFormatter(
+        sp.GetRequiredService<IToolComplexityClassifier>(),
+        sp.GetService<ILogger<ToolPromptFormatter>>()));  // Filters/annotates tools per model capability tier + info/debug logging
 services.AddSingleton<IToolExecutor>(sp => new McpToolExecutor(
     sp.GetRequiredService<IMcpClientManager>(), ...,
     sp.GetRequiredService<ToolPromptFormatter>(),

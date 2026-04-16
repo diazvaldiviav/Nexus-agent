@@ -31,6 +31,7 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private int _maxOutputLines = 200;
     [ObservableProperty] private int _maxOutputBytes = 32000;
     [ObservableProperty] private bool _schemaValidationEnabled = true;
+    [ObservableProperty] private bool _toolFilteringEnabled;
     [ObservableProperty] private string _statusMessage = string.Empty;
     [ObservableProperty] private bool _hasError;
     [ObservableProperty] private bool _hasSuccess;
@@ -128,6 +129,7 @@ public partial class SettingsViewModel : ObservableObject
             MaxOutputLines = _config.Mcp.MaxOutputLines;
             MaxOutputBytes = _config.Mcp.MaxOutputBytes;
             SchemaValidationEnabled = _config.Mcp.SchemaValidationEnabled;
+            ToolFilteringEnabled = _config.Mcp.ToolFilteringEnabled;
 
             _lastSnapshot = CaptureSnapshot();
             IsDirty = false;
@@ -171,6 +173,7 @@ public partial class SettingsViewModel : ObservableObject
         _config.Mcp.MaxOutputLines = MaxOutputLines;
         _config.Mcp.MaxOutputBytes = MaxOutputBytes;
         _config.Mcp.SchemaValidationEnabled = SchemaValidationEnabled;
+        _config.Mcp.ToolFilteringEnabled = ToolFilteringEnabled;
 
         try
         {
@@ -199,7 +202,7 @@ public partial class SettingsViewModel : ObservableObject
         EmbeddingsModel, DecayLambda,
         SummarizationInterval, RecentInteractionsFetchLimit,
         MaxToolCallIterations, ToolCallTimeoutSeconds,
-        MaxOutputLines, MaxOutputBytes, SchemaValidationEnabled);
+        MaxOutputLines, MaxOutputBytes, SchemaValidationEnabled, ToolFilteringEnabled);
 
     private void CheckDirty()
     {
@@ -271,6 +274,12 @@ public partial class SettingsViewModel : ObservableObject
     }
 
     partial void OnSchemaValidationEnabledChanged(bool value)
+    {
+        if (_isLoading) return;
+        CheckDirty();
+    }
+
+    partial void OnToolFilteringEnabledChanged(bool value)
     {
         if (_isLoading) return;
         CheckDirty();
@@ -540,7 +549,8 @@ public partial class SettingsViewModel : ObservableObject
         string EmbeddingsModel, decimal DecayLambda,
         int SummarizationInterval, int RecentInteractionsFetchLimit,
         int MaxToolCallIterations, int ToolCallTimeoutSeconds,
-        int MaxOutputLines, int MaxOutputBytes, bool SchemaValidationEnabled);
+        int MaxOutputLines, int MaxOutputBytes, bool SchemaValidationEnabled,
+        bool ToolFilteringEnabled);
 }
 
 public sealed class McpServerRow

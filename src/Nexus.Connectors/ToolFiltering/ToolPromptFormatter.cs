@@ -1,11 +1,17 @@
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 
 namespace Nexus.Connectors.ToolFiltering;
 
+/// <summary>
+/// Formats tool definitions for LLM prompts, filtering and annotating tools
+/// based on the model's capability tier.
+/// </summary>
 public sealed class ToolPromptFormatter
 {
     private readonly IToolComplexityClassifier _classifier;
+    private readonly ILogger<ToolPromptFormatter>? _logger;
 
     private const string LimitedModerateHint =
         "(Prefer simpler alternatives when possible.)";
@@ -20,11 +26,15 @@ public sealed class ToolPromptFormatter
         ["patch_file"] = "read_text_file → modify content → write_file",
     };
 
-    public ToolPromptFormatter(IToolComplexityClassifier classifier)
+    public ToolPromptFormatter(IToolComplexityClassifier classifier, ILogger<ToolPromptFormatter>? logger = null)
     {
         _classifier = classifier ?? throw new ArgumentNullException(nameof(classifier));
+        _logger = logger;
     }
 
+    /// <summary>
+    /// Formats the given tools into a prompt string filtered for the model's capability tier.
+    /// </summary>
     public string Format(IEnumerable<ToolDefinition> tools, string? modelName)
     {
         var toolList = tools.ToList();
@@ -32,13 +42,14 @@ public sealed class ToolPromptFormatter
             return string.Empty;
 
         var modelTier = ToolCapabilityResolver.Resolve(modelName);
+        _logger?.LogInformation("Tool filtering: model '{ModelName}' resolved to tier {Tier}", modelName, modelTier);
 
         var classified = toolList
             .Select(t => (tool: t, score: _classifier.Classify(t)))
             .ToList();
 
         var included = new List<(ToolDefinition tool, ToolComplexityScore score, string? hint)>();
-        var excluded = new List<ToolDefinition>();
+        var excluded = new List<(ToolDefinition tool, ToolComplexityScore score)>();
 
         foreach (var (tool, score) in classified)
         {
@@ -54,7 +65,7 @@ public sealed class ToolPromptFormatter
                     included.Add((tool, score, null));
                     break;
                 case (ToolCallingTier.Limited, ToolComplexityTier.Complex):
-                    excluded.Add(tool);
+                    excluded.Add((tool, score));
                     break;
                 case (ToolCallingTier.Limited, ToolComplexityTier.Moderate):
                     included.Add((tool, score, LimitedModerateHint));
@@ -65,12 +76,21 @@ public sealed class ToolPromptFormatter
             }
         }
 
+        _logger?.LogInformation("Tool filtering: {Included} included, {Excluded} excluded",
+            included.Count, excluded.Count);
+
+        foreach (var (tool, score) in excluded)
+        {
+            _logger?.LogDebug("Tool '{Name}' excluded: tier={Tier}, score={Score:F2}",
+                tool.Name, score.Tier, score.Score);
+        }
+
         var sb = new StringBuilder();
         sb.AppendLine("Available tools:");
 
         foreach (var (tool, score, hint) in included)
         {
-            RenderTool(sb, tool);
+            ToolRegistry.RenderToolToStringBuilder(sb, tool);
             if (hint is not null)
                 sb.AppendLine($"    {hint}");
         }
@@ -81,49 +101,11 @@ public sealed class ToolPromptFormatter
             var includedPairs = included
                 .Select(x => (x.tool, x.score))
                 .ToList();
-            foreach (var tool in excluded)
+            foreach (var (tool, _) in excluded)
                 sb.AppendLine(BuildExclusionHint(tool, includedPairs));
         }
 
         return sb.ToString();
-    }
-
-    private static void RenderTool(StringBuilder sb, ToolDefinition tool)
-    {
-        // Copied from ToolRegistry.cs lines 224-256. Keep in sync.
-        sb.AppendLine($"- {tool.Name}: {tool.Description}");
-
-        if (!tool.InputSchema.HasValue)
-            return;
-
-        var schema = tool.InputSchema.Value;
-        var required = new HashSet<string>(StringComparer.Ordinal);
-        if (schema.TryGetProperty("required", out var reqArray) &&
-            reqArray.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var item in reqArray.EnumerateArray())
-            {
-                var name = item.GetString();
-                if (name is not null) required.Add(name);
-            }
-        }
-
-        if (schema.TryGetProperty("properties", out var props) &&
-            props.ValueKind == JsonValueKind.Object)
-        {
-            foreach (var prop in props.EnumerateObject())
-            {
-                var paramType = prop.Value.TryGetProperty("type", out var t)
-                    ? t.GetString() ?? "any"
-                    : "any";
-                var desc = prop.Value.TryGetProperty("description", out var d)
-                    ? d.GetString() ?? ""
-                    : "";
-                var reqTag = required.Contains(prop.Name) ? "REQUIRED" : "optional";
-
-                sb.AppendLine($"    {prop.Name} ({paramType}, {reqTag}): {desc}");
-            }
-        }
     }
 
     private static string BuildExclusionHint(

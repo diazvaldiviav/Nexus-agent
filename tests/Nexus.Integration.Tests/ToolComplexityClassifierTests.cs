@@ -531,4 +531,101 @@ public class ToolComplexityClassifierTests
         Assert.Equal(ToolComplexityTier.Complex, result.Tier);
         Assert.True(result.HasArrayOfObjects);
     }
+
+    // -------------------------------------------------------------------------
+    // 15. patch_ name prefix → semantic score +0.15
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void Classify_PatchNamePrefix_AddsSemanticScore()
+    {
+        // Arrange — flat schema; "patch_file" triggers StartsWith("patch_") detection
+        const string schema = """
+            {
+              "type": "object",
+              "properties": {
+                "path": { "type": "string" }
+              },
+              "required": ["path"]
+            }
+            """;
+        var toolPlain = MakeTool("read_file", schema);
+        var toolPatch = MakeTool("patch_file", schema);
+
+        // Act
+        var scorePlain = _classifier.Classify(toolPlain).Score;
+        var scorePatch = _classifier.Classify(toolPatch).Score;
+
+        // Assert — patch_ prefix adds exactly 0.15
+        Assert.Equal(scorePlain + 0.15, scorePatch, precision: 10);
+    }
+
+    // -------------------------------------------------------------------------
+    // 16. Null description → no NullReferenceException
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void Classify_NullDescription_NoNullReferenceException()
+    {
+        // Arrange — tool with null Description (can happen from MCP deserialization)
+        const string schema = """
+            {
+              "type": "object",
+              "properties": {
+                "path": { "type": "string" }
+              },
+              "required": ["path"]
+            }
+            """;
+        var tool = MakeTool("test_tool", schema);
+        tool.Description = null!;
+
+        // Act & Assert — should not throw
+        var result = _classifier.Classify(tool);
+        Assert.Equal(ToolComplexityTier.Simple, result.Tier);
+    }
+
+    // -------------------------------------------------------------------------
+    // 17. Malformed schema property → handled gracefully
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void Classify_MalformedSchemaProperty_SkipsGracefully()
+    {
+        // Arrange — property value is a string instead of an object
+        const string schema = """
+            {
+              "type": "object",
+              "properties": {
+                "good": { "type": "string" },
+                "bad": "not-an-object"
+              },
+              "required": ["good"]
+            }
+            """;
+        var tool = MakeTool("malformed_tool", schema);
+
+        // Act & Assert — should not throw
+        var result = _classifier.Classify(tool);
+        Assert.NotNull(result);
+    }
+
+    // -------------------------------------------------------------------------
+    // 18. Null InputSchema explicitly → Simple tier
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void Classify_NullInputSchema_TierIsSimple()
+    {
+        // Arrange — explicitly null InputSchema
+        var tool = new ToolDefinition { Name = "no_schema", Description = "No schema" };
+        // InputSchema is null by default
+
+        // Act
+        var result = _classifier.Classify(tool);
+
+        // Assert
+        Assert.Equal(ToolComplexityTier.Simple, result.Tier);
+        Assert.Equal(0, result.TotalParamCount);
+    }
 }
