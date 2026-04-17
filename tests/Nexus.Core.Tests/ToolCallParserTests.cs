@@ -824,6 +824,113 @@ public class ToolCallParserTests
     }
 
     [Fact]
+    public void TryParse_WriteFileWithHtmlEscapedQuotes_Parses()
+    {
+        // Reproduce: qwen3:1.7b generates write_file with onclick=\"alert(...)\" inside content
+        var response = """[TOOL_CALL: {"name": "write_file", "arguments": {"path": "D:\\Nexus\\ecommerce\\index.html", "content": "<!DOCTYPE html><html><body><h1>Hola</h1><button onclick=\"alert('welcome')\">Click</button></body></html>"}}]""";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal("write_file", result.Name);
+        Assert.NotNull(result.Arguments);
+        Assert.Equal("D:\\Nexus\\ecommerce\\index.html", result.Arguments["path"]);
+        Assert.Contains("onclick=", (string)result.Arguments["content"]);
+    }
+
+    [Fact]
+    public void TryParse_WriteFileWithHtmlEscapedQuotesDoubleClose_Parses()
+    {
+        // Reproduce exact model output: ends with }}]] (extra ]])
+        var response = """[TOOL_CALL: {"name": "write_file", "arguments": {"path": "D:\\Nexus\\ecommerce\\index.html", "content": "<!DOCTYPE html><html><body><h1>Hola</h1><button onclick=\"alert('welcome')\">Click</button><button onclick=\"alert('cart')\">Cart</button></body></html>"}}]]""";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal("write_file", result.Name);
+    }
+
+    [Fact]
+    public void TryParse_WriteFileWithNewlinesInContent_Parses()
+    {
+        // Model may generate literal \n in content instead of \\n
+        var response = "[TOOL_CALL: {\"name\": \"write_file\", \"arguments\": {\"path\": \"D:\\\\Nexus\\\\ecommerce\\\\index.html\", \"content\": \"line1\\nline2\\nline3\"}}]";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal("write_file", result.Name);
+    }
+
+    [Fact]
+    public void TryParse_WriteFileWithRealNewlinesAndScriptTag_Parses()
+    {
+        // Exact reproduction: qwen3:1.7b emits real newlines inside JSON string content
+        // plus HTML script tags with function definitions
+        var response = "[TOOL_CALL: {\"name\": \"write_file\", \"arguments\": {\"path\": \"D:\\\\Nexus\\\\ecommerce\\\\index.html\", \"content\": \"<script>\nfunction AddSum() {\n    const num1 = parseFloat(document.getElementById('num1').value);\n    const num2 = parseFloat(document.getElementById('num2').value);\n    const sum = num1 + num2;\n    document.getElementById('result').innerText = sum;\n}\n</script>\"}}]]";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal("write_file", result.Name);
+        Assert.NotNull(result.Arguments);
+        Assert.Contains("AddSum", (string)result.Arguments["content"]);
+    }
+
+    [Fact]
+    public void TryParse_WriteFileWithBracesInsideContent_Parses()
+    {
+        // The content has JS function braces { } inside the JSON string value
+        // WalkJsonObject must not count these as JSON structural braces
+        var response = "[TOOL_CALL: {\"name\": \"write_file\", \"arguments\": {\"path\": \"test.html\", \"content\": \"<script>\\nfunction foo() {\\n  return 1;\\n}\\n</script>\"}}]";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal("write_file", result.Name);
+        Assert.Contains("function foo()", (string)result.Arguments!["content"]);
+    }
+
+    [Fact]
+    public void TryParse_WriteFileExactQwen17bFailure_Parses()
+    {
+        // Exact 384-char response from qwen3:1.7b that caused TryParse to return null
+        // Note: the \n in the content are JSON escape sequences (two chars: \ and n)
+        var response = "[TOOL_CALL: {\"name\": \"write_file\", \"arguments\": {\"path\": \"D:\\\\Nexus\\\\ecommerce\\\\index.html\", \"content\": \"<script>\\nfunction AddSum() {\\n    const num1 = parseFloat(document.getElementById('num1').value);\\n    const num2 = parseFloat(document.getElementById('num2').value);\\n    const result = num1 + num2;\\n    document.getElementById('result').textContent = result;\\n}\\n</script>\"}}]]";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal("write_file", result.Name);
+    }
+
+    [Fact]
+    public void TryParse_WriteFileExactQwen17bFailure_WithRealNewlines_Parses()
+    {
+        // Same but with REAL newlines (0x0A) instead of \n escape sequences
+        var response = "[TOOL_CALL: {\"name\": \"write_file\", \"arguments\": {\"path\": \"D:\\\\Nexus\\\\ecommerce\\\\index.html\", \"content\": \"<script>\nfunction AddSum() {\n    const num1 = parseFloat(document.getElementById('num1').value);\n    const num2 = parseFloat(document.getElementById('num2').value);\n    const result = num1 + num2;\n    document.getElementById('result').textContent = result;\n}\n</script>\"}}]]";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal("write_file", result.Name);
+    }
+
+    [Fact]
+    public void TryParse_WriteFileWithUnescapedBracesInContent_Parses()
+    {
+        // Model emits { } inside content without proper JSON escaping
+        // The braces are inside a JSON string so WalkJsonObject should ignore them
+        var content = "<script>\nfunction AddSum() {\n    return 1;\n}\n</script>";
+        var response = $"[TOOL_CALL: {{\"name\": \"write_file\", \"arguments\": {{\"path\": \"test.html\", \"content\": \"{content.Replace("\"", "\\\"")}\"}}}}]]";
+
+        var result = ToolCallParser.TryParse(response);
+
+        Assert.NotNull(result);
+        Assert.Equal("write_file", result.Name);
+    }
+
+    [Fact]
     public void IsParsableJson_ValidJson_ReturnsTrue()
     {
         Assert.True(ToolCallParser.IsParsableJson("{\"name\": \"foo\"}"));

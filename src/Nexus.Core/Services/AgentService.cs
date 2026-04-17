@@ -320,7 +320,17 @@ public class AgentService : IAgentService
 
             var toolCall = ToolCallParser.TryParse(response);
             if (toolCall is null)
+            {
+                if (response.Contains("[TOOL_CALL:"))
+                {
+                    // Dump first 600 bytes as hex to capture invisible/control characters
+                    var bytes = System.Text.Encoding.UTF8.GetBytes(response);
+                    var hexLen = Math.Min(600, bytes.Length);
+                    var hex = string.Join(" ", bytes.Take(hexLen).Select(b => b.ToString("X2")));
+                    _logger?.LogWarning("TryParse null. Len={Length}, Hex({HexLen}b): {Hex}", response.Length, hexLen, hex);
+                }
                 break;
+            }
 
             _logger?.LogInformation("Tool call detected in stream: {Name} (iteration {Iteration})", toolCall.Name, i + 1);
 
