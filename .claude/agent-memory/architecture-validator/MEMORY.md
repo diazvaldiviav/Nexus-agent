@@ -199,6 +199,17 @@
   - LOW-1 carry-forward: LoadActionsAsync_SetsIsLoading test needs PropertyChanged collection pattern (List<bool>) — point-in-time assert will always see false after awaiting completed task
   - LOW-2 carry-forward: InternalsVisibleTo awareness for ConfigLoader.Save exception path in SettingsViewModelTests
 
+- Sprint Phase 8.1 (Plan-then-Execute Hardening): APPROVED (0 HIGH, 0 MEDIUM, 5 LOW)
+  - File: docs/validation/US-sprint-phase-8-1-hardening-validation.md
+  - 0 AC fidelity mismatches — architect's self-check §13 caught and resolved the one deviation (F2c test name _Change → _Toggled) before submission
+  - LOW-1: Requirements doc §FR-B2 says ex.Message but AC-B2 says exceptionTypeName — architecture correctly uses GetType().Name per AC; implementer must not follow requirements doc wording
+  - LOW-2: EntityExtractor.ExtractAndPersistAsync virtual change touches Nexus.Memory (otherwise untouched this sprint) — implementation step 11
+  - LOW-3: conversationText param in RunBackgroundExtraction becomes dead code — must add // AC-A2: unused comment per design
+  - LOW-4: ConfigureAwait(false) reminder for B2 enumerator drain (MoveNextAsync, DisposeAsync)
+  - LOW-5: _loggedDimMismatch/_loggedCacheCap non-atomic — benign (Risk R-5 accepted)
+  - Codebase confirmed: SettingsSnapshot currently has 18 fields (ToolFilteringEnabled is last) — ToolPlanningEnabled becomes 19th
+  - Codebase confirmed: ValidateToolFilteringEnabled takes (bool, string?) — new ValidateToolPlanningEnabled takes (bool, ModelProviderConfig) to check both Provider and Model
+
 ### Recurring Pattern (new): Test Fake Construction Chain Divergence
 - When architecture specifies a helper method to construct a multi-dependency class (e.g., AgentService 11-param), always verify each intermediate constructor call against the actual source.
 - MemoryContextBuilder: 2nd param is SemanticSearch, 3rd is IEmbeddingService? — easy to mistake the order.
@@ -227,6 +238,21 @@
 - If code-behind uses `FindControl<T>("Name")` to locate an AXAML element, the AXAML element MUST have `x:Name="Name"` — without it FindControl returns null silently.
 - Always verify the AXAML file for matching x:Name when reviewing code-behind that calls FindControl.
 - This is an easy miss when the AXAML was written before the code-behind was designed.
+
+- US-Sprint-Phase-8 (ToolPlanner plan-then-execute): APPROVED Round 2 (0 HIGH, 0 MEDIUM, 0 LOW)
+  - File: docs/validation/US-sprint-phase-8-tool-planning-validation.md
+  - All 5 Round 1 issues resolved in revision (2 HIGH + 1 MEDIUM + 2 LOW all closed)
+  - HIGH-1 fix: BuildPlanExecutionSystemPromptAsync is now exactly 2-param; modelName read internally from _config.Models.Local.Model
+  - HIGH-2 fix: Retry message is now `$"You must call {step.MatchedToolName}. Use [TOOL_CALL: {{\"name\": \"{step.MatchedToolName}\", ...}}]"` — exact AC-5 template
+  - MEDIUM-1 fix: §11 step 10 now documents FakeLlmProvider must use provider name "ollama" matching config.Models.Local.Provider default
+  - LOW-1 fix: ConfigureAwait(false) now explicitly stated in §5 (ToolPlanner) and §6 (AgentService plan paths)
+  - LOW-2 fix: Logger resolution note added to §8.1 DI registration
+  - Codebase confirmed: DoomLoopTests:66-67 and McpToolCallLoopTests:70-71 need named-arg fix (still valid, unchanged from Round 1)
+
+### Recurring Pattern (new): AC Self-Assessment ✅ Override — Always Re-verify
+- Architecture docs often self-assess §15 "All rows match" but substitute richer requirements-doc text for the Sprint AC text.
+- Always re-read the AC text vs architecture doc text character-by-character for: method signatures, retry message strings, prompt template text.
+- §15 ✅ marks are not authoritative — the validator re-verifies each claim independently.
 
 ## Links to Detail Files
 - patterns.md: recurring architecture patterns

@@ -361,4 +361,27 @@ public class SettingsViewModelValidationTests
         // Assert
         Assert.True(vm.IsDirty);
     }
+
+    // ── ToolPlanningEnabled toggle ────────────────────────────────────────
+
+    [Fact]
+    public void ToolPlanningEnabled_Toggled_SetsIsDirty()
+    {
+        // Arrange: fresh VM loaded from config (IsDirty = false after construction)
+        var config = new NexusConfig();
+        config.Models.Local.Endpoint = "http://localhost:11434";
+        config.Mcp.ToolPlanningEnabled = false;   // start with planning disabled
+
+        var vm = new SettingsViewModel(config, CreateMcpLifecycleService());
+        Assert.False(vm.IsDirty, "IsDirty must be false immediately after construction");
+
+        // Act: toggle ToolPlanningEnabled (differs from initial snapshot → dirty)
+        vm.ToolPlanningEnabled = true;
+
+        // Assert: dirty flag set AND SaveSettingsCommand becomes executable
+        Assert.True(vm.IsDirty,
+            "IsDirty must be true after toggling ToolPlanningEnabled");
+        Assert.True(vm.SaveSettingsCommand.CanExecute(null),
+            "SaveSettingsCommand.CanExecute must be true when IsDirty=true and no validation errors");
+    }
 }

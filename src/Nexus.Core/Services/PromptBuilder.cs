@@ -23,20 +23,28 @@ public class PromptBuilder
     private readonly MemoryContextBuilder _memoryContextBuilder;
     private readonly AgentConfig _agentConfig;
     private readonly IToolExecutor? _toolExecutor;
+    private readonly NexusConfig? _config;
 
-    public PromptBuilder(MemoryContextBuilder memoryContextBuilder, AgentConfig agentConfig, IToolExecutor? toolExecutor = null)
+    public PromptBuilder(MemoryContextBuilder memoryContextBuilder, AgentConfig agentConfig, IToolExecutor? toolExecutor = null, NexusConfig? config = null)
     {
-        _memoryContextBuilder = memoryContextBuilder;
-        _agentConfig = agentConfig;
+        _memoryContextBuilder = memoryContextBuilder ?? throw new ArgumentNullException(nameof(memoryContextBuilder));
+        _agentConfig = agentConfig ?? throw new ArgumentNullException(nameof(agentConfig));
         _toolExecutor = toolExecutor;
+        _config = config;
     }
 
-    public async Task<string> BuildSystemPromptAsync(string userQuery, string? modelName = null, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Builds the identity + memory context + available-tools listing (if any) as a shared prelude.
+    /// Does NOT append tool-usage instructions — callers are responsible for their mode-specific tail.
+    /// Returns a tuple of (builder, hasTools) so callers know whether tools were included.
+    /// </summary>
+    private async Task<(System.Text.StringBuilder Builder, bool HasTools)> BuildPreludeAsync(
+        string userQuery,
+        string? modelName,
+        CancellationToken ct)
     {
-        var context = await _memoryContextBuilder.BuildContextAsync(userQuery, cancellationToken);
+        var context = await _memoryContextBuilder.BuildContextAsync(userQuery, ct).ConfigureAwait(false);
         var memorySection = _memoryContextBuilder.FormatContextAsPrompt(context);
-
-        var languageName = LanguageNames.TryGetValue(_agentConfig.Language, out var name) ? name : "English";
 
         var builder = new System.Text.StringBuilder();
         builder.AppendLine($"You are {_agentConfig.Name}, a personal AI agent with persistent memory.");
@@ -50,11 +58,23 @@ public class PromptBuilder
             builder.AppendLine(memorySection);
         }
 
-        if (_toolExecutor is not null && _toolExecutor.HasTools)
+        var hasTools = _toolExecutor is not null && _toolExecutor.HasTools;
+        if (hasTools)
         {
             builder.AppendLine();
             builder.AppendLine("# Available Tools");
-            builder.AppendLine(_toolExecutor.GetToolDefinitionsForPrompt(modelName));
+            builder.AppendLine(_toolExecutor!.GetToolDefinitionsForPrompt(modelName));
+        }
+
+        return (builder, hasTools);
+    }
+
+    public async Task<string> BuildSystemPromptAsync(string userQuery, string? modelName = null, CancellationToken cancellationToken = default)
+    {
+        var (builder, hasTools) = await BuildPreludeAsync(userQuery, modelName, cancellationToken).ConfigureAwait(false);
+
+        if (hasTools)
+        {
             builder.AppendLine();
             builder.AppendLine("# CRITICAL: How to Use Tools");
             builder.AppendLine("When the user asks you to perform an action (create a file, read a file, list a directory, etc.), you MUST use the appropriate tool.");
@@ -82,6 +102,33 @@ public class PromptBuilder
             builder.AppendLine("If the user asks you to perform an action (like creating a file), provide the content and instruct them to save it manually.");
             builder.AppendLine("NEVER claim you have created, saved, or modified a file — you cannot do that without tools.");
         }
+
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// Builds a system prompt for plan-execution mode.
+    /// Contains the same memory context and tool listing prelude as <see cref="BuildSystemPromptAsync"/>
+    /// but replaces the "call tools freely" instructions with plan-execution directives.
+    /// The model name is read internally from configuration (<see cref="NexusConfig.Models.Local.Model"/>).
+    /// </summary>
+    public async Task<string> BuildPlanExecutionSystemPromptAsync(
+        string userQuery,
+        CancellationToken ct)
+    {
+        var modelName = _config?.Models?.Local?.Model;
+        var (builder, hasTools) = await BuildPreludeAsync(userQuery, modelName, ct).ConfigureAwait(false);
+
+        if (hasTools)
+        {
+            builder.AppendLine();
+        }
+
+        builder.AppendLine("# Plan Execution Mode");
+        builder.AppendLine("You will receive step-by-step instructions. Execute each step exactly as instructed.");
+        builder.AppendLine("When told to use a specific tool, respond with ONLY the [TOOL_CALL: ...] line and nothing else.");
+        builder.AppendLine("Do not call multiple tools in one turn. Do not add commentary around the tool call.");
+        builder.AppendLine("After all steps complete you will be asked to summarize the results for the user.");
 
         return builder.ToString();
     }

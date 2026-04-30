@@ -68,7 +68,7 @@ public class McpToolCallLoopTests : IAsyncLifetime
         var fakeProvider = new FakeLlmProvider(providerName, responseFactory);
         var providerFactory = new LlmProviderFactory(new ILlmProvider[] { fakeProvider });
         var agent = new AgentService(config, _graph, promptBuilder, modelRouter,
-            entityExtractor, providerFactory, summarizer, toolExecutor,
+            entityExtractor, providerFactory, summarizer, toolExecutor: toolExecutor,
             schemaValidator: schemaValidator);
         _lastAgent = agent;
         return agent;

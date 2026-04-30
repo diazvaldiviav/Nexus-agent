@@ -91,7 +91,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(sp => new PromptBuilder(
             sp.GetRequiredService<MemoryContextBuilder>(),
             config.Agent,
-            sp.GetService<IToolExecutor>()));
+            sp.GetService<IToolExecutor>(),
+            config));
 
         // Registration order: ModelRouter -> ILlmClient -> EntityExtractor -> Providers -> Factory -> AgentService
         services.AddSingleton(sp => new ModelRouter(
@@ -182,6 +183,11 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<LlmProviderFactory>();
 
+        services.AddSingleton<IToolPlanner>(sp => new ToolPlanner(
+            sp.GetRequiredService<LlmProviderFactory>(),
+            config,
+            sp.GetService<ILogger<ToolPlanner>>()));
+
         services.AddSingleton(sp => new ContextWindowManager(
             sp.GetRequiredService<IInteractionSummarizer>(),
             sp.GetRequiredService<PromptBuilder>(),
@@ -196,13 +202,14 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<EntityExtractor>(),
             sp.GetRequiredService<LlmProviderFactory>(),
             sp.GetRequiredService<IInteractionSummarizer>(),
-            sp.GetService<IToolExecutor>(),
-            sp.GetService<IToolArgumentValidator>(),
-            sp.GetService<ISchemaValidator>(),
-            sp.GetService<EntityResolver>(),
-            sp.GetService<MemoryCompressor>(),
-            sp.GetService<ContextWindowManager>(),
-            sp.GetService<ILogger<AgentService>>()));
+            toolPlanner: sp.GetService<IToolPlanner>(),
+            toolExecutor: sp.GetService<IToolExecutor>(),
+            argumentValidator: sp.GetService<IToolArgumentValidator>(),
+            schemaValidator: sp.GetService<ISchemaValidator>(),
+            entityResolver: sp.GetService<EntityResolver>(),
+            compressor: sp.GetService<MemoryCompressor>(),
+            contextWindowManager: sp.GetService<ContextWindowManager>(),
+            logger: sp.GetService<ILogger<AgentService>>()));
         services.AddSingleton<IAgentService>(sp => sp.GetRequiredService<AgentService>());
         services.AddSingleton(sp => new RelevanceDecay(
             dbInit.ConnectionString,

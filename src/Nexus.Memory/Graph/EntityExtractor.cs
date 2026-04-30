@@ -51,7 +51,7 @@ public class EntityExtractor
         }
     }
 
-    public async Task<List<Entity>> ExtractAndPersistAsync(
+    public virtual async Task<List<Entity>> ExtractAndPersistAsync(
         string text,
         string? extractionPrompt = null,
         CancellationToken cancellationToken = default)

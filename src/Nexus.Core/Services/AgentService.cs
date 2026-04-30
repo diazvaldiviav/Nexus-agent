@@ -20,6 +20,7 @@ public class AgentService : IAgentService
     private readonly EntityExtractor _entityExtractor;
     private readonly LlmProviderFactory _providerFactory;
     private readonly IInteractionSummarizer _summarizer;
+    private readonly IToolPlanner? _toolPlanner;
     private readonly IToolExecutor? _toolExecutor;
     private readonly IToolArgumentValidator? _argumentValidator;
     private readonly ISchemaValidator? _schemaValidator;
@@ -32,6 +33,12 @@ public class AgentService : IAgentService
     private readonly object _extractionLock = new();
     private int _turnCount;
 
+    // Plan-trail window for background entity extraction.
+    // PlanTrailExtractionWindow = messages per step (user instruction + LLM reply + tool result = 3).
+    // PlanTrailHeaderSize = fixed overhead (original user message + plan header + final summary + slop = 4).
+    private const int PlanTrailExtractionWindow = 3;
+    private const int PlanTrailHeaderSize = 4;
+
     public AgentService(
         NexusConfig config,
         IKnowledgeGraph graph,
@@ -40,6 +47,7 @@ public class AgentService : IAgentService
         EntityExtractor entityExtractor,
         LlmProviderFactory providerFactory,
         IInteractionSummarizer summarizer,
+        IToolPlanner? toolPlanner = null,
         IToolExecutor? toolExecutor = null,
         IToolArgumentValidator? argumentValidator = null,
         ISchemaValidator? schemaValidator = null,
@@ -55,6 +63,7 @@ public class AgentService : IAgentService
         _entityExtractor = entityExtractor;
         _providerFactory = providerFactory;
         _summarizer = summarizer;
+        _toolPlanner = toolPlanner;
         _toolExecutor = toolExecutor;
         _argumentValidator = argumentValidator;
         _schemaValidator = schemaValidator;
@@ -91,6 +100,21 @@ public class AgentService : IAgentService
             await _contextWindowManager.CompactIfNeededAsync(
                 systemPrompt, _conversationHistory, modelConfig, cancellationToken)
                 .ConfigureAwait(false);
+
+        // Plan-then-execute path (opt-in; falls through to normal loop on null plan)
+        if (_toolPlanner is not null && _toolExecutor is not null && _toolExecutor.HasTools)
+        {
+            var toolDefs = _toolExecutor.GetToolDefinitionsForPrompt(modelConfig.Model) ?? string.Empty;
+            var plan = await _toolPlanner.GeneratePlanAsync(userMessage, toolDefs, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (plan is not null && plan.Steps.Count > 0)
+            {
+                _logger?.LogInformation("ToolPlanner returned {Count} steps — entering plan-execute path", plan.Steps.Count);
+                return await ExecutePlanAsync(plan, userMessage, modelConfig, sw, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
 
         var response = await CallLlmAsync(systemPrompt, modelConfig, cancellationToken);
 
@@ -154,78 +178,8 @@ public class AgentService : IAgentService
             DurationMs = (int)sw.ElapsedMilliseconds
         };
 
-        // Background extraction — tracked so it completes before next message or exit
         var conversationText = $"User: {userMessage}\nAssistant: {response}";
-        var extractionPrompt = _promptBuilder.BuildEntityExtractionPrompt(conversationText);
-        var currentTurn = _turnCount;
-        var historySnapshot = _conversationHistory.ToList();
-        var extractionTask = Task.Run(async () =>
-        {
-            try
-            {
-                var extracted = await _entityExtractor.ExtractAndPersistAsync(
-                    conversationText, extractionPrompt);
-                agentResponse.ExtractedEntities = extracted;
-
-                await _graph.LogActionAsync(new AgentAction
-                {
-                    ActionType = "chat",
-                    Detail = userMessage[..Math.Min(200, userMessage.Length)],
-                    ModelUsed = $"{modelConfig.Provider}/{modelConfig.Model}",
-                    TokensIn = (systemPrompt.Length + userMessage.Length) / 4,
-                    TokensOut = response.Length / 4,
-                    DurationMs = (int)sw.ElapsedMilliseconds
-                });
-                _logger?.LogInformation("Entity extraction completed: {Count} entities", extracted.Count);
-
-                if (_entityResolver is not null)
-                {
-                    try
-                    {
-                        await _entityResolver.FindAndMergeAsync(useLlmConfirmation: false);
-                        _logger?.LogInformation("Background deduplication completed");
-                    }
-                    catch (Exception dedupEx)
-                    {
-                        _logger?.LogWarning(dedupEx, "Background deduplication failed");
-                    }
-                }
-
-                if (currentTurn > 0 && currentTurn % _config.Memory.SummarizationInterval == 0)
-                {
-                    try
-                    {
-                        var convText = string.Join("\n", historySnapshot.Select(m => $"{m.Role}: {m.Content}"));
-                        var summaryPrompt = _promptBuilder.BuildInteractionSummaryPrompt(convText);
-                        var entityIds = extracted.Select(e => e.Id).ToList();
-                        await _summarizer.SummarizeAsync(convText, summaryPrompt, entityIds);
-                        _logger?.LogInformation("Interaction summarized at turn {Turn}", currentTurn);
-                    }
-                    catch (Exception sumEx)
-                    {
-                        _logger?.LogWarning(sumEx, "Background summarization failed at turn {Turn}", currentTurn);
-                    }
-                }
-
-                if (_compressor is not null && _config.Memory.CompressionEnabled)
-                {
-                    try
-                    {
-                        await _compressor.ArchiveStaleEntitiesAsync();
-                        _logger?.LogInformation("Background archival completed");
-                    }
-                    catch (Exception archiveEx)
-                    {
-                        _logger?.LogWarning(archiveEx, "Background archival failed");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger?.LogWarning(ex, "Background processing failed (extraction or dedup).");
-            }
-        });
-        TrackExtraction(extractionTask);
+        RunBackgroundExtraction(conversationText, userMessage, response, modelConfig, sw, systemPrompt, agentResponse);
 
         return agentResponse;
     }
@@ -297,6 +251,22 @@ public class AgentService : IAgentService
             await _contextWindowManager.CompactIfNeededAsync(
                 systemPrompt, _conversationHistory, modelConfig, cancellationToken)
                 .ConfigureAwait(false);
+
+        // Plan-then-execute path (opt-in; falls through to normal streaming loop on null plan)
+        if (_toolPlanner is not null && _toolExecutor is not null && _toolExecutor.HasTools)
+        {
+            var toolDefs = _toolExecutor.GetToolDefinitionsForPrompt(modelConfig.Model) ?? string.Empty;
+            var plan = await _toolPlanner.GeneratePlanAsync(userMessage, toolDefs, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (plan is not null && plan.Steps.Count > 0)
+            {
+                _logger?.LogInformation("ToolPlanner returned {Count} steps — entering plan-execute stream path", plan.Steps.Count);
+                await foreach (var tok in ExecutePlanStreamAsync(plan, userMessage, modelConfig, onEntitiesExtracted, cancellationToken))
+                    yield return tok;
+                yield break;
+            }
+        }
 
         var fullResponse = new System.Text.StringBuilder();
 
@@ -391,23 +361,466 @@ public class AgentService : IAgentService
 
         sw.Stop();
 
-        // Background extraction — tracked so it completes before next message or exit
         var conversationText = $"User: {userMessage}\nAssistant: {response}";
-        var extractionPrompt = _promptBuilder.BuildEntityExtractionPrompt(conversationText);
+        RunBackgroundExtraction(conversationText, userMessage, response, modelConfig, sw, systemPrompt, agentResponse: null, onEntitiesExtracted: onEntitiesExtracted);
+    }
+
+    /// <summary>
+    /// Executes a tool plan step-by-step, reusing existing validation, timeout, and truncation logic.
+    /// Returns an AgentResponse with the final summary as content. Also fires background extraction
+    /// including the full plan trail (Risk #8 mitigation).
+    /// </summary>
+    /// <remarks>
+    /// Invariants enforced:
+    /// - Falls through to return a minimal response when the plan is null or empty (caller guards).
+    /// - Per-step tool execution failures are caught and logged as Warning; the step appends a
+    ///   "[Tool {name} failed: ...]" history marker and continues — the plan is never aborted by
+    ///   a transient tool failure (AC-A1).
+    /// - Synthetic [PLANNER] messages are filtered from conversationText before background extraction
+    ///   so that entity extraction does not process internal orchestration noise (AC-A2).
+    /// - The final-summary LLM call is wrapped in a linked CTS; on timeout a minimal response is
+    ///   returned rather than propagating an OperationCanceledException (AC-A3).
+    /// </remarks>
+    private async Task<AgentResponse> ExecutePlanAsync(
+        ToolPlan plan,
+        string userMessage,
+        ModelProviderConfig modelConfig,
+        System.Diagnostics.Stopwatch sw,
+        CancellationToken ct)
+    {
+        // 1. Alternate system prompt for plan-execution mode (AC-6)
+        var systemPrompt = await _promptBuilder
+            .BuildPlanExecutionSystemPromptAsync(userMessage, ct)
+            .ConfigureAwait(false);
+
+        // 2. Append plan header to history as a synthetic user message
+        var header = new System.Text.StringBuilder();
+        header.AppendLine("[Plan]");
+        foreach (var s in plan.Steps)
+        {
+            var toolHint = s.MatchedToolName is not null
+                ? $" (tool: {s.MatchedToolName})"
+                : " (no tool matched)";
+            header.AppendLine($"Step {s.StepNumber}: {s.Description}{toolHint}");
+        }
+        header.AppendLine("Execute each step in order. Output only one tool call per turn.");
+        _conversationHistory.Add(new ConversationMessage { Role = "user", Content = header.ToString() });
+
+        // 3. Per-step execution
+        foreach (var step in plan.Steps)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (step.MatchedToolName is null)
+            {
+                _conversationHistory.Add(new ConversationMessage
+                {
+                    Role = "user",
+                    Content = $"[PlanStep {step.StepNumber}] No tool matched; skipping."
+                });
+                continue;
+            }
+
+            // 3a. Instruct LLM for this step (AC-A2: [PLANNER] prefix marks synthetic messages)
+            var stepInstruction =
+                $"[PLANNER] Execute ONLY this step: use {step.MatchedToolName} to {step.Description}. Call the tool now with [TOOL_CALL: ...]";
+            _conversationHistory.Add(new ConversationMessage { Role = "user", Content = stepInstruction });
+
+            // AC-B3: step-level info log parity (mirrors normal-loop "Tool call detected" log)
+            _logger?.LogInformation("Plan step {n}/{total}: tool={tool}", step.StepNumber, plan.Steps.Count, step.MatchedToolName);
+
+            // 3b. LLM round-trip
+            var reply = await CallLlmAsync(systemPrompt, modelConfig, ct).ConfigureAwait(false);
+            var toolCall = ToolCallParser.TryParse(reply);
+
+            // 3c. Retry once if no tool call (AC-5 exact retry message with [PLANNER] prefix per AC-A2)
+            if (toolCall is null)
+            {
+                var retryMsg = $"[PLANNER] You must call {step.MatchedToolName}. Use [TOOL_CALL: {{\"name\": \"{step.MatchedToolName}\", ...}}]";
+                _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = reply });
+                _conversationHistory.Add(new ConversationMessage { Role = "user", Content = retryMsg });
+                reply = await CallLlmAsync(systemPrompt, modelConfig, ct).ConfigureAwait(false);
+                toolCall = ToolCallParser.TryParse(reply);
+            }
+
+            if (toolCall is null)
+            {
+                _logger?.LogWarning("PlanStep {N}: no tool call after retry — skipping", step.StepNumber);
+                _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = reply });
+                _conversationHistory.Add(new ConversationMessage
+                {
+                    Role = "user",
+                    Content = $"[PlanStep {step.StepNumber}] No tool call produced; moving on."
+                });
+                continue;
+            }
+
+            // 3d. Model called a different tool — log, still execute
+            if (!string.Equals(toolCall.Name, step.MatchedToolName, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger?.LogWarning("PlanStep {N}: model called '{Actual}' instead of planned '{Planned}'",
+                    step.StepNumber, toolCall.Name, step.MatchedToolName);
+            }
+
+            // 3e. Execute (reuses all existing validation/timeout); AC-A1: non-OCE failure continues plan
+            string toolResult;
+            try
+            {
+                toolResult = await ExecuteToolWithTimeoutAsync(toolCall, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                _logger?.LogWarning(ex, "Plan step {n} tool {tool} execution failed; continuing",
+                    step.StepNumber, step.MatchedToolName);
+                _conversationHistory.Add(new ConversationMessage
+                {
+                    Role = "assistant",
+                    Content = $"[Tool {step.MatchedToolName} failed: {ex.Message}]"
+                });
+                continue;
+            }
+
+            var truncated = OutputTruncator.Truncate(toolResult, _config.Mcp.MaxOutputLines, _config.Mcp.MaxOutputBytes);
+            // AC-B1: mirror normal-loop truncation log
+            if (truncated.WasTruncated)
+                _logger?.LogInformation("Tool output truncated: {OriginalLines} lines / {OriginalBytes} bytes → {TruncatedLength} chars",
+                    truncated.OriginalLines, truncated.OriginalBytes, truncated.Content.Length);
+            toolResult = truncated.Content;
+
+            // 3f. Append to history
+            _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = reply });
+            _conversationHistory.Add(new ConversationMessage
+            {
+                Role = "user",
+                Content = $"[PlanStep {step.StepNumber} Result]: {toolResult}"
+            });
+        }
+
+        // 4. Final summary LLM call (AC-A3: linked CTS guards against timeout; graceful fallback on timeout)
+        var languageName = _config.Agent.Language;
+        _conversationHistory.Add(new ConversationMessage
+        {
+            Role = "user",
+            Content = $"All steps complete. Summarize the results for the user in {languageName}."
+        });
+
+        string finalResponse;
+        using (var summaryCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+        {
+            summaryCts.CancelAfter(TimeSpan.FromSeconds(_config.Mcp.ToolPlanningTimeoutSeconds));
+            try
+            {
+                finalResponse = await CallLlmAsync(systemPrompt, modelConfig, summaryCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                _logger?.LogWarning("Plan final-summary LLM call timed out after {Timeout}s",
+                    _config.Mcp.ToolPlanningTimeoutSeconds);
+                sw.Stop();
+                return new AgentResponse
+                {
+                    Content = "Plan complete (summary unavailable — LLM timed out).",
+                    ModelUsed = $"{modelConfig.Provider}/{modelConfig.Model}",
+                    DurationMs = (int)sw.ElapsedMilliseconds
+                };
+            }
+        }
+
+        _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = finalResponse });
+        _turnCount++;
+
+        sw.Stop();
+        var agentResponse = new AgentResponse
+        {
+            Content = finalResponse,
+            ModelUsed = $"{modelConfig.Provider}/{modelConfig.Model}",
+            DurationMs = (int)sw.ElapsedMilliseconds
+        };
+
+        // 5. Background extraction — pass full plan trail (Risk #8 mitigation); AC-E2 named constants
+        var planTrail = string.Join("\n",
+            _conversationHistory
+                .Skip(Math.Max(0, _conversationHistory.Count - (plan.Steps.Count * PlanTrailExtractionWindow + PlanTrailHeaderSize)))
+                .Select(m => $"{m.Role}: {m.Content}"));
+        var conversationText = $"User: {userMessage}\n{planTrail}\nAssistant: {finalResponse}";
+        RunBackgroundExtraction(conversationText, userMessage, finalResponse, modelConfig, sw, systemPrompt, agentResponse);
+
+        return agentResponse;
+    }
+
+    /// <summary>
+    /// Streaming variant of ExecutePlanAsync. Yields progress tokens per step and
+    /// streams the final summary. Fires background extraction with the full plan trail.
+    /// </summary>
+    /// <remarks>
+    /// Invariants enforced:
+    /// - Falls through to yield nothing when the plan is null or empty (caller guards).
+    /// - Per-step tool execution failures are caught and logged as Warning; the step appends a
+    ///   "[Tool {name} failed: ...]" history marker and continues — the plan is never aborted by
+    ///   a transient tool failure (AC-A1).
+    /// - Synthetic [PLANNER] messages are filtered from conversationText before background extraction
+    ///   so that entity extraction does not process internal orchestration noise (AC-A2).
+    /// - The streaming summary is drained via manual IAsyncEnumerator; on mid-stream failure a
+    ///   "[Summary unavailable: {TypeName}]" marker is yielded and the stream closes cleanly (AC-B2).
+    /// </remarks>
+    private async IAsyncEnumerable<string> ExecutePlanStreamAsync(
+        ToolPlan plan,
+        string userMessage,
+        ModelProviderConfig modelConfig,
+        Action<int>? onEntitiesExtracted,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        // 1. Alternate system prompt for plan-execution mode
+        var systemPrompt = await _promptBuilder
+            .BuildPlanExecutionSystemPromptAsync(userMessage, ct)
+            .ConfigureAwait(false);
+
+        // 2. Append plan header to history
+        var header = new System.Text.StringBuilder();
+        header.AppendLine("[Plan]");
+        foreach (var s in plan.Steps)
+        {
+            var toolHint = s.MatchedToolName is not null
+                ? $" (tool: {s.MatchedToolName})"
+                : " (no tool matched)";
+            header.AppendLine($"Step {s.StepNumber}: {s.Description}{toolHint}");
+        }
+        header.AppendLine("Execute each step in order. Output only one tool call per turn.");
+        _conversationHistory.Add(new ConversationMessage { Role = "user", Content = header.ToString() });
+
+        var totalSteps = plan.Steps.Count;
+
+        // 3. Per-step execution
+        foreach (var step in plan.Steps)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            yield return $"\n[Planning Step {step.StepNumber}/{totalSteps}: {step.Description}]\n";
+
+            if (step.MatchedToolName is null)
+            {
+                _conversationHistory.Add(new ConversationMessage
+                {
+                    Role = "user",
+                    Content = $"[PlanStep {step.StepNumber}] No tool matched; skipping."
+                });
+                continue;
+            }
+
+            // 3a. Instruct LLM for this step (AC-A2: [PLANNER] prefix marks synthetic messages)
+            var stepInstruction =
+                $"[PLANNER] Execute ONLY this step: use {step.MatchedToolName} to {step.Description}. Call the tool now with [TOOL_CALL: ...]";
+            _conversationHistory.Add(new ConversationMessage { Role = "user", Content = stepInstruction });
+
+            // AC-B3: step-level info log parity (mirrors normal-loop "Tool call detected" log)
+            _logger?.LogInformation("Plan step {n}/{total}: tool={tool}", step.StepNumber, plan.Steps.Count, step.MatchedToolName);
+
+            // 3b. LLM round-trip
+            var reply = await CallLlmAsync(systemPrompt, modelConfig, ct).ConfigureAwait(false);
+            var toolCall = ToolCallParser.TryParse(reply);
+
+            // 3c. Retry once if no tool call (AC-5 exact retry message with [PLANNER] prefix per AC-A2)
+            if (toolCall is null)
+            {
+                var retryMsg = $"[PLANNER] You must call {step.MatchedToolName}. Use [TOOL_CALL: {{\"name\": \"{step.MatchedToolName}\", ...}}]";
+                _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = reply });
+                _conversationHistory.Add(new ConversationMessage { Role = "user", Content = retryMsg });
+                reply = await CallLlmAsync(systemPrompt, modelConfig, ct).ConfigureAwait(false);
+                toolCall = ToolCallParser.TryParse(reply);
+            }
+
+            if (toolCall is null)
+            {
+                _logger?.LogWarning("PlanStep {N}: no tool call after retry — skipping", step.StepNumber);
+                _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = reply });
+                _conversationHistory.Add(new ConversationMessage
+                {
+                    Role = "user",
+                    Content = $"[PlanStep {step.StepNumber}] No tool call produced; moving on."
+                });
+                continue;
+            }
+
+            // 3d. Model called a different tool — log, still execute
+            if (!string.Equals(toolCall.Name, step.MatchedToolName, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger?.LogWarning("PlanStep {N}: model called '{Actual}' instead of planned '{Planned}'",
+                    step.StepNumber, toolCall.Name, step.MatchedToolName);
+            }
+
+            // 3e. Execute (reuses all existing validation/timeout); AC-A1: non-OCE failure continues plan
+            string toolResult;
+            try
+            {
+                toolResult = await ExecuteToolWithTimeoutAsync(toolCall, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                _logger?.LogWarning(ex, "Plan step {n} tool {tool} execution failed; continuing",
+                    step.StepNumber, step.MatchedToolName);
+                _conversationHistory.Add(new ConversationMessage
+                {
+                    Role = "assistant",
+                    Content = $"[Tool {step.MatchedToolName} failed: {ex.Message}]"
+                });
+                continue;
+            }
+
+            var truncated = OutputTruncator.Truncate(toolResult, _config.Mcp.MaxOutputLines, _config.Mcp.MaxOutputBytes);
+            // AC-B1: mirror normal-loop truncation log
+            if (truncated.WasTruncated)
+                _logger?.LogInformation("Tool output truncated: {OriginalLines} lines / {OriginalBytes} bytes → {TruncatedLength} chars",
+                    truncated.OriginalLines, truncated.OriginalBytes, truncated.Content.Length);
+            toolResult = truncated.Content;
+
+            // 3f. Append to history
+            _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = reply });
+            _conversationHistory.Add(new ConversationMessage
+            {
+                Role = "user",
+                Content = $"[PlanStep {step.StepNumber} Result]: {toolResult}"
+            });
+
+            yield return $"\n[Step {step.StepNumber} completed.]\n";
+        }
+
+        // 4. Final summary — stream tokens via manual enumerator drain (AC-B2)
+        // Using IAsyncEnumerator manually so we can yield a fallback marker inside the catch block.
+        // yield return cannot appear inside a catch directly, so we split the try/catch around MoveNextAsync.
+        var languageName = _config.Agent.Language;
+        _conversationHistory.Add(new ConversationMessage
+        {
+            Role = "user",
+            Content = $"All steps complete. Summarize the results for the user in {languageName}."
+        });
+
+        var finalResponseBuilder = new System.Text.StringBuilder();
+        var summaryProvider = _providerFactory.GetRequiredProvider(modelConfig.Provider);
+
+        // AC-B2: manual enumerator drain so we can yield a fallback marker on mid-stream failure.
+        // C# forbids yield return inside a catch block, so we use a pendingFallback sentinel that
+        // is set in the catch and yielded after the try/catch exits.
+        var streamEnumerator = summaryProvider.ChatStreamAsync(
+            systemPrompt, _conversationHistory, modelConfig.Model, ct).GetAsyncEnumerator(ct);
+        try
+        {
+            string? pendingFallback = null;
+            while (pendingFallback is null)
+            {
+                bool hasNext;
+                string? currentToken = null;
+                try
+                {
+                    hasNext = await streamEnumerator.MoveNextAsync().ConfigureAwait(false);
+                    if (hasNext)
+                        currentToken = streamEnumerator.Current;
+                }
+                catch (OperationCanceledException)
+                {
+                    // Caller cancellation — propagate; let finally dispose the enumerator
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    // Mid-stream failure — set fallback, break inner loop; yielded below (AC-B2)
+                    pendingFallback = $"[Summary unavailable: {ex.GetType().Name}]";
+                    break;
+                }
+
+                if (!hasNext)
+                    break;
+
+                finalResponseBuilder.Append(currentToken);
+                yield return currentToken!;
+            }
+
+            // Yield the fallback marker outside the catch block (C# constraint)
+            if (pendingFallback is not null)
+            {
+                finalResponseBuilder.Append(pendingFallback);
+                yield return pendingFallback;
+            }
+        }
+        finally
+        {
+            await streamEnumerator.DisposeAsync().ConfigureAwait(false);
+        }
+
+        var finalResponse = finalResponseBuilder.ToString();
+        _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = finalResponse });
+        _turnCount++;
+
+        sw.Stop();
+
+        // 5. Background extraction — pass full plan trail (Risk #8 mitigation); AC-E2 named constants
+        var planTrail = string.Join("\n",
+            _conversationHistory
+                .Skip(Math.Max(0, _conversationHistory.Count - (plan.Steps.Count * PlanTrailExtractionWindow + PlanTrailHeaderSize)))
+                .Select(m => $"{m.Role}: {m.Content}"));
+        var conversationText = $"User: {userMessage}\n{planTrail}\nAssistant: {finalResponse}";
+        RunBackgroundExtraction(conversationText, userMessage, finalResponse, modelConfig, sw, systemPrompt, agentResponse: null, onEntitiesExtracted: onEntitiesExtracted);
+    }
+
+    /// <summary>
+    /// Fires background entity extraction, action logging, deduplication, summarization,
+    /// and archival. Shared by ChatAsync, ChatStreamAsync, and ExecutePlanAsync to avoid duplication (SRP).
+    /// When <paramref name="agentResponse"/> is non-null, sets its <see cref="AgentResponse.ExtractedEntities"/>
+    /// after extraction completes (only ChatAsync path — streaming callers pass null).
+    /// </summary>
+    /// <remarks>
+    /// Invariants enforced:
+    /// - The <paramref name="conversationText"/> parameter is accepted from callers for minimal-ripple
+    ///   compatibility, but when the history snapshot contains [PLANNER]-prefixed messages the method
+    ///   recomputes conversationText internally from a filtered snapshot to exclude synthetic orchestration
+    ///   messages before passing to the entity extractor (AC-A2). The parameter name is preserved to
+    ///   avoid cascading signature changes across callers.
+    /// - All background failures (extraction, dedup, summarization, archival) are caught and logged
+    ///   as Warning; they never surface to the caller.
+    /// </remarks>
+    private void RunBackgroundExtraction(
+        string conversationText,
+        string userMessage,
+        string finalResponse,
+        ModelProviderConfig modelConfig,
+        System.Diagnostics.Stopwatch sw,
+        string systemPrompt,
+        AgentResponse? agentResponse,
+        Action<int>? onEntitiesExtracted = null)
+    {
         var currentTurn = _turnCount;
         var historySnapshot = _conversationHistory.ToList();
+
+        // AC-A2: filter synthetic [PLANNER] messages before building conversationText for extraction
+        var filteredSnapshot = historySnapshot
+            .Where(m => !m.Content.StartsWith("[PLANNER] ", StringComparison.Ordinal))
+            .ToList();
+        if (filteredSnapshot.Count < historySnapshot.Count)
+        {
+            conversationText = string.Join("\n",
+                filteredSnapshot.Select(m => $"{m.Role}: {m.Content}"));
+        }
+
+        var extractionPrompt = _promptBuilder.BuildEntityExtractionPrompt(conversationText);
+
         var extractionTask = Task.Run(async () =>
         {
             try
             {
-                var extracted = await _entityExtractor.ExtractAndPersistAsync(conversationText, extractionPrompt);
+                var extracted = await _entityExtractor.ExtractAndPersistAsync(
+                    conversationText, extractionPrompt);
+
+                if (agentResponse is not null)
+                    agentResponse.ExtractedEntities = extracted;
+
                 await _graph.LogActionAsync(new AgentAction
                 {
                     ActionType = "chat",
                     Detail = userMessage[..Math.Min(200, userMessage.Length)],
                     ModelUsed = $"{modelConfig.Provider}/{modelConfig.Model}",
                     TokensIn = (systemPrompt.Length + userMessage.Length) / 4,
-                    TokensOut = response.Length / 4,
+                    TokensOut = finalResponse.Length / 4,
                     DurationMs = (int)sw.ElapsedMilliseconds
                 });
                 _logger?.LogInformation("Entity extraction completed: {Count} entities", extracted.Count);

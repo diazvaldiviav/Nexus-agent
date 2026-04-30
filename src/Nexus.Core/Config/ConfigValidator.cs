@@ -21,6 +21,10 @@ public static class ConfigValidator
         AddIfNotNull(errors, "Mcp.MaxOutputBytes", ValidateMaxOutputBytes(config.Mcp.MaxOutputBytes));
         AddIfNotNull(errors, "Mcp.ToolFilteringEnabled",
             ValidateToolFilteringEnabled(config.Mcp.ToolFilteringEnabled, config.Models.Local.Model));
+        AddIfNotNull(errors, "Mcp.ToolPlanningEnabled",
+            ValidateToolPlanningEnabled(config.Mcp.ToolPlanningEnabled, config.Models.Local));
+        AddIfNotNull(errors, "Mcp.ToolPlanningTimeoutSeconds",
+            ValidateToolPlanningTimeoutSeconds(config.Mcp.ToolPlanningTimeoutSeconds));
         for (var i = 0; i < config.Mcp.Servers.Count; i++)
             AddIfNotNull(errors, $"Mcp.Servers[{i}]", ValidateMcpServerEntry(config.Mcp.Servers[i]));
         return new ValidationResult(errors);
@@ -56,6 +60,14 @@ public static class ConfigValidator
         => enabled && string.IsNullOrWhiteSpace(localModel)
             ? "Tool filtering is enabled but no local model is configured."
             : null;
+
+    public static string? ValidateToolPlanningEnabled(bool enabled, ModelProviderConfig local)
+        => enabled && (string.IsNullOrWhiteSpace(local.Provider) || string.IsNullOrWhiteSpace(local.Model))
+            ? "Tool planning is enabled but no local provider/model is configured."
+            : null;
+
+    public static string? ValidateToolPlanningTimeoutSeconds(int value)
+        => value < 5 || value > 300 ? "ToolPlanningTimeoutSeconds must be between 5 and 300." : null;
 
     public static string? ValidateMcpServerEntry(McpServerEntry entry)
     {

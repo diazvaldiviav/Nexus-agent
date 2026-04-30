@@ -98,6 +98,7 @@ nexus-agent/
 │   │   │   ├── IAgentService.cs    # ChatStreamAsync, ClearHistoryAsync, FlushPendingExtractionAsync
 │   │   │   ├── ILlmProvider.cs     # ChatAsync, ChatStreamAsync
 │   │   │   ├── IToolExecutor.cs    # Cross-layer (impl in Connectors). GetToolDefinitionsForPrompt() + GetToolDefinitionsForPrompt(string? modelName) default interface method for model-aware tool filtering
+│   │   │   ├── IToolPlanner.cs     # Plan-then-execute orchestration: Task<ToolPlan?> GeneratePlanAsync(userMessage, toolDefinitionsForPrompt, ct). Graceful-degradation contract — returns null on disabled flag, empty tools, LLM failure, unparseable output, all-null matches. OperationCanceledException rethrown.
 │   │   │   └── ISchemaValidator.cs  # Schema validation contract + SchemaValidationResult (impl in Connectors)
 │   │   ├── Providers/           # LLM providers (Nexus.Core.Providers)
 │   │   │   ├── OllamaLlmProvider.cs
@@ -107,15 +108,17 @@ nexus-agent/
 │   │   │   ├── OllamaLlmClient.cs  # ILlmClient impl via Ollama HTTP
 │   │   │   └── LlmProviderFactory.cs
 │   │   ├── Services/            # Orchestration (Nexus.Core.Services)
-│   │   │   ├── AgentService.cs      # Main agent loop + output truncation + doom loop detection
+│   │   │   ├── AgentService.cs      # Main agent loop + output truncation + doom loop detection + plan-controlled execution path. Optional IToolPlanner? ctor param (8th, first optional after summarizer). Plan gate in ChatAsync/ChatStreamAsync before existing tool loop: when _toolPlanner + _toolExecutor + HasTools all present, calls GeneratePlanAsync → if plan non-null + Steps.Count > 0, dispatches to ExecutePlanAsync/ExecutePlanStreamAsync; else falls through to existing loop unchanged. ExecutePlanAsync: per step with MatchedToolName, builds "[PLANNER] Execute ONLY this step" prompt (synthetic sentinel filtered from background extraction), step-level Info log "Plan step {n}/{total}: tool={tool}", parses via ToolCallParser.TryParse, per-step try/catch wraps ExecuteToolWithTimeoutAsync with "when (!ct.IsCancellationRequested)" filter + "[Tool {name} failed: {ex.Message}]" history entry + continue (AC-A1), truncates via OutputTruncator.Truncate with parity truncation log, retries once with exact "[PLANNER] You must call {tool}. Use [TOOL_CALL: {\"name\": \"{tool}\", ...}]" retry, skips step on continued miss, final summary LLM call wrapped with linked CTS (ToolPlanningTimeoutSeconds) → graceful minimal AgentResponse on timeout. ExecutePlanStreamAsync mirrors with progress tokens + enumerator-drain pattern on summary stream emitting "[Summary unavailable: {ex.GetType().Name}]" sentinel (pendingFallback pattern avoids CS1631). Named constants PlanTrailExtractionWindow=3 + PlanTrailHeaderSize=4 replace plan-trail magic numbers. Shared RunBackgroundExtraction private helper (SRP) invoked from ChatAsync + ChatStreamAsync + both plan variants; plan trail propagated to extraction; [PLANNER]-prefixed messages filtered via StartsWith(Ordinal) before conversationText is built (AC-A2)
 │   │   │   ├── ContextWindowManager.cs # Context window estimation + conversation compaction
 │   │   │   ├── ModelRouter.cs       # Local vs cloud selection
 │   │   │   ├── OutputTruncator.cs   # Static: head/tail line truncation + UTF-8 safe byte truncation (TruncatedOutput record)
-│   │   │   ├── PromptBuilder.cs     # Memory context + tool definitions. BuildSystemPromptAsync(userQuery, modelName?, ct) passes modelName to IToolExecutor for model-aware tool filtering
-│   │   │   └── ToolCallParser.cs    # Multi-format tool call parser: [TOOL_CALL:] marker + <tool_call> XML + raw JSON fallback, markdown fence stripping, brace-walking state machine (WalkJsonObject 3-tuple with endedInString), mid-string JSON repair (closes unclosed quotes before appending braces), IsParsableJson guard, TryParseAll multi-tool extraction with ParsedToolCall position tracking + IsOverlapping dedup, TryParseJson shared helper
+│   │   │   ├── PromptBuilder.cs     # Memory context + tool definitions. BuildSystemPromptAsync(userQuery, modelName?, ct) passes modelName to IToolExecutor for model-aware tool filtering. New: BuildPlanExecutionSystemPromptAsync(string userQuery, CancellationToken ct) for plan-execute mode (omits "call tools freely" instructions, appends step-execution directive). Shared private BuildPreludeAsync((StringBuilder, bool HasTools) return) helper extracted to DRY the identity+memory+tools-listing prelude between both public builders; reads model name internally from _config.Models.Local.Model. Optional NexusConfig? ctor param (4th) for plan-mode model-name inference; null-guards on required params.
+│   │   │   ├── ToolCallParser.cs    # Multi-format tool call parser: [TOOL_CALL:] marker + <tool_call> XML + raw JSON fallback, markdown fence stripping, brace-walking state machine (WalkJsonObject 3-tuple with endedInString), mid-string JSON repair (closes unclosed quotes before appending braces), IsParsableJson guard, TryParseAll multi-tool extraction with ParsedToolCall position tracking + IsOverlapping dedup, TryParseJson shared helper
+│   │   │   └── ToolPlanner.cs       # Sealed IToolPlanner impl: plan-then-execute for small models (opt-in via Mcp.ToolPlanningEnabled). Constructor (LlmProviderFactory, NexusConfig, ILogger<ToolPlanner>?) — 3 params, no IEmbeddingService dependency (removed in Phase 8.2). Gates: !ToolPlanningEnabled → null; empty toolDefinitionsForPrompt → null. Uses config.Models.Local provider/model for planning LLM call (local-first). Named constants: MaxSteps=5, NormalizedMatchScore=0.9f, TokenOverlapThreshold=0.7f. Static TokenSeparators 14-char array. StepRegex: ^\s*(?:step\s*)?(\d+)[.):]\s*(.+) (IgnoreCase|Multiline|Compiled). PlanningPromptTemplate constant (AC-9 verbatim). Step parsing truncated to MaxSteps. LLM call wrapped in linked CTS (caller ct + config.Mcp.ToolPlanningTimeoutSeconds seconds) — timeout returns null via "when (!ct.IsCancellationRequested)" filter, caller cancellation propagates. ct.ThrowIfCancellationRequested() checkpoints between LLM call+parse and per MatchStepAsync iteration. Deterministic 3-tier fuzzy match: Tier 1 case-insensitive Contains → Similarity 1.0f; Tier 2 Normalize() (underscore/hyphen → space + lowercase) Contains → Similarity 0.9f; Tier 3 Tokenize() token overlap ratio ≥ TokenOverlapThreshold → Similarity ratio; strict > argmax (earlier tool wins ties). Helpers: Normalize() + Tokenize() (splits on TokenSeparators). NO cross-layer dep on Nexus.Memory.Abstractions. All awaits use ConfigureAwait(false). Graceful degradation: outer try/catch — OperationCanceledException rethrown; other exceptions log warning + return null. XML <remarks> documents all graceful-null triggers.
 │   │   ├── Models/              # POCOs (Nexus.Core.Models)
 │   │   │   ├── AgentResponse.cs
-│   │   │   └── ConversationMessage.cs
+│   │   │   ├── ConversationMessage.cs
+│   │   │   └── ToolPlan.cs          # Two sealed records co-located: ToolPlanStep(int StepNumber, string Description, string? MatchedToolName, float Similarity) + ToolPlan(IReadOnlyList<ToolPlanStep> Steps, string RawPlanText). Transient only — never persisted to DB.
 │   │   ├── Config/
 │   │   │   ├── ConfigLoader.cs
 │   │   │   ├── NexusConfig.cs
@@ -147,7 +150,7 @@ nexus-agent/
 │   │   │   ├── ChatViewModel.cs  # Chat MVVM: ChatMessage (ObservableObject, IsAssistantNormal computed) + streaming, HasMessages, SetExamplePromptCommand, error handling (HasError/ErrorMessage/ErrorDetail), RetryCommand, DismissErrorCommand, DispatchToUI virtual
 │   │   │   ├── ErrorClassifier.cs  # Static error classifier: HttpRequestException→connection, TaskCanceledException→timeout, unauthorized→apikey, default→generic
 │   │   │   ├── MemoryGraphViewModel.cs  # Graph VM: HasNodes computed property
-│   │   │   ├── SettingsViewModel.cs  # Settings MVVM: ConfigValidator integration, IsDirty/SettingsSnapshot dirty tracking (18-field record), CanSave guard, inline validation errors (Memory + MCP fields), ApiKeyWarning, HasError/HasSuccess banners, MCP tool settings (MaxToolCallIterations, ToolCallTimeoutSeconds, MaxOutputLines, MaxOutputBytes, SchemaValidationEnabled, ToolFilteringEnabled) with reactive OnChanged validation
+│   │   │   ├── SettingsViewModel.cs  # Settings MVVM: ConfigValidator integration, IsDirty/SettingsSnapshot dirty tracking (19-field record), CanSave guard, inline validation errors (Memory + MCP fields), ApiKeyWarning, HasError/HasSuccess banners, MCP tool settings (MaxToolCallIterations, ToolCallTimeoutSeconds, MaxOutputLines, MaxOutputBytes, SchemaValidationEnabled, ToolFilteringEnabled, ToolPlanningEnabled) with reactive OnChanged validation
 │   │   │   └── ActionLogViewModel.cs  # Action log VM: HasActions computed property, DispatchToUI virtual
 │   │   ├── Layout/
 │   │   │   └── ForceDirectedLayout.cs  # Fruchterman-Reingold force-directed graph layout
@@ -244,8 +247,8 @@ nexus-agent/
 │
 ├── tests/
 │   ├── Nexus.Memory.Tests/      # Memory layer tests
-│   ├── Nexus.Core.Tests/        # Core orchestration tests
-│   ├── Nexus.Integration.Tests/ # End-to-end tests + ToolComplexityClassifierTests (18 tests: +patch_ prefix, null description, malformed schema, null InputSchema) + ToolCapabilityResolverTests (13 tests) + ToolPromptFormatterTests (12 tests: +null InputSchema rendering) + McpToolExecutorFilteringTests (5 tests: disabled/null-formatter/empty-model fallback, happy path, empty tools) + PromptBuilderTests (12 tests: includes 2 model-name-forwarding tests for tool filtering wiring)
+│   ├── Nexus.Core.Tests/        # Core orchestration tests + ToolPlannerTests (14 tests: 8 parsing/gates/timeout tests unchanged — disabled/empty gates, numbered + Step N parsing, >5 truncation, garbage → null, LLM call timeout, more-than-MaxSteps truncation+log — PLUS 6 fuzzy-match tests: Tier1_ExactToolNameInDescription, Tier1_CaseInsensitive, Tier2_NormalizedUnderscores, Tier3_TokenOverlap, NoMatch_ReturnsNullMatched, FullPlanning_FakeLlm_ReturnsValidPlanWithFuzzyMatches) + ConfigValidatorTests (+3 new: ToolPlanningEnabled_RequiresLocalModel, ToolPlanningEnabled_AllowsDefaultConfig, ToolPlanningTimeoutSeconds_RangeValidated [Theory])
+│   ├── Nexus.Integration.Tests/ # End-to-end tests + ToolComplexityClassifierTests (18 tests: +patch_ prefix, null description, malformed schema, null InputSchema) + ToolCapabilityResolverTests (13 tests) + ToolPromptFormatterTests (12 tests: +null InputSchema rendering) + McpToolExecutorFilteringTests (5 tests: disabled/null-formatter/empty-model fallback, happy path, empty tools) + PromptBuilderTests (12 tests: includes 2 model-name-forwarding tests for tool filtering wiring) + AgentServicePlanExecutionTests (9 tests: 5 original — plan executes steps in order, retry-once on missing tool call with exact AC-5 text, model calls different tool executes anyway, disabled → normal loop, no matched tools → fall through — PLUS 4 hardening tests — tool-execution-throws plan continues, [PLANNER] messages filtered from extraction, cancellation mid-step propagates OCE, streaming summary LLM failure emits sentinel "[Summary unavailable: {TypeName}]")
 │   ├── Nexus.Desktop.Tests/     # Desktop ViewModel tests (Avalonia.Headless.XUnit)
 │   ├── Nexus.Hardware.Tests/    # Hardware tests: enums, envelopes, profile, classifier, WmiCpuProfiler, Win32RamProfiler, DxgiGpuProfiler, WindowsHostProfiler, LhmSensorMonitor, PerfCounterMonitor, DI registration [Trait("Category","Integration")], records (164 tests)
 │   └── Nexus.Models.Tests/      # Model domain tests: 15 enum tests, DistributionProfile (5), ModelExecutionProfile (4), ModelCandidate (7), WorkloadIntentProfile (7), ModelNormalizer (18), CuratedCatalog (15), DI registration (6) — 77 tests
@@ -298,6 +301,11 @@ services.AddSingleton<ILlmProvider>(sp => new GeminiLlmProvider(key, ...));    /
 services.AddSingleton<ILlmProvider>(sp => new AnthropicLlmProvider(key, ...)); // if GetApiKey("anthropic")
 services.AddSingleton<ILlmProvider>(sp => new OpenAiLlmProvider(key, ...));    // if GetApiKey("openai")
 services.AddSingleton<LlmProviderFactory>(); // resolves all ILlmProvider via IEnumerable
+// Plan-then-execute for small models — IToolPlanner registered after LlmProviderFactory (opt-in via config.Mcp.ToolPlanningEnabled):
+services.AddSingleton<IToolPlanner>(sp => new ToolPlanner(
+    sp.GetRequiredService<LlmProviderFactory>(),
+    config,
+    sp.GetService<ILogger<ToolPlanner>>())); // AgentService receives it as optional 8th ctor param
 services.AddSingleton<IInteractionSummarizer, InteractionSummarizer>(); // LLM summary + heuristic fallback
 services.AddSingleton(sp => new EntityResolver(
     sp.GetRequiredService<IKnowledgeGraph>(),
@@ -312,7 +320,7 @@ services.AddSingleton(sp => new MemoryCompressor(
     sp.GetService<ILogger<MemoryCompressor>>())); // Archive stale entities to JSON
 services.AddSingleton(sp => new PromptBuilder(
     sp.GetRequiredService<MemoryContextBuilder>(), config.Agent,
-    sp.GetService<IToolExecutor>()));  // Optional IToolExecutor for tool definitions in prompt
+    sp.GetService<IToolExecutor>(), config));  // Optional IToolExecutor for tool definitions; optional NexusConfig? enables BuildPlanExecutionSystemPromptAsync to read config.Models.Local.Model internally
 // ContextWindowManager: estimates token usage, compacts conversation history when approaching model context window limit
 services.AddSingleton(sp => new ContextWindowManager(
     sp.GetRequiredService<IInteractionSummarizer>(),
@@ -354,7 +362,7 @@ public class NexusConfig
 // ModelsConfig has: Local, Cloud, Routing, Gemini?, Anthropic?, OpenAi?
 // Per-provider keys: models.gemini.api_key, models.anthropic.api_key, models.openai.api_key
 // Resolved via ModelsConfig.GetApiKey("provider") — 3-tier fallback
-// McpConfig has: List<McpServerEntry> Servers, MaxToolCallIterations (int, default 3), ToolCallTimeoutSeconds (int, default 30), SchemaValidationEnabled (bool, default true), TypeCoercionEnabled (bool, default true), MaxOutputLines (int, default 200), MaxOutputBytes (int, default 32000), ToolFilteringEnabled (bool, default false — gates small-model tool complexity filtering)
+// McpConfig has: List<McpServerEntry> Servers, MaxToolCallIterations (int, default 3), ToolCallTimeoutSeconds (int, default 30), SchemaValidationEnabled (bool, default true), TypeCoercionEnabled (bool, default true), MaxOutputLines (int, default 200), MaxOutputBytes (int, default 32000), ToolFilteringEnabled (bool, default false — gates small-model tool complexity filtering), ToolPlanningEnabled (bool, default false — gates plan-then-execute path for small models; opt-in via nexus.yaml mcp.tool_planning_enabled), ToolPlanningTimeoutSeconds (int, default 30, range 5..300 — linked-CTS timeout for planner LLM call + plan-mode final summary; validator-enforced)
 // McpServerEntry has: Name, Transport ("stdio"|"sse"), Command?, Args (List<string>), Url?, Env (Dict<string,string>)
 // ModelProviderConfig has: Provider, Model, Endpoint?, ApiKey?, ContextWindow (int, default 8192), MaxOutputTokens (int, default 2048)
 // MemoryConfig has: SummarizationInterval (int, default 10), RecentInteractionsFetchLimit (int, default 5), DeduplicationThreshold (double, default 0.85), ArchivePath (string, default "~/.nexus/archive/"), CompressionEnabled (bool, default true), ArchiveThresholdDays (int, default 90), ContextCompactionThreshold (double, default 0.80), CompactionKeepRecentMessages (int, default 4)

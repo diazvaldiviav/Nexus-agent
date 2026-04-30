@@ -109,7 +109,7 @@
                 <!-- MCP Tool Settings -->
                 <StackPanel Spacing="12">
                     <TextBlock Text="MCP Tool Settings" FontWeight="SemiBold" FontSize="14" />
-                    <Grid ColumnDefinitions="200,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto">
+                    <Grid ColumnDefinitions="200,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto">
                         <TextBlock Grid.Row="0" Grid.Column="0" Text="Max tool call iterations (1-20):" VerticalAlignment="Center" />
                         <NumericUpDown Grid.Row="0" Grid.Column="1"
                                        Value="{Binding MaxToolCallIterations}"
@@ -166,6 +166,14 @@
                                       IsChecked="{Binding ToolFilteringEnabled}"
                                       OnContent="Enabled" OffContent="Disabled"
                                       AutomationProperties.Name="Tool filtering for small models"
+                                      Margin="0,8,0,0" />
+
+                        <TextBlock Grid.Row="10" Grid.Column="0" Text="Tool planning (small models):" VerticalAlignment="Center" Margin="0,8,0,0" />
+                        <ToggleSwitch Grid.Row="10" Grid.Column="1"
+                                      IsChecked="{Binding ToolPlanningEnabled}"
+                                      OnContent="Enabled" OffContent="Disabled"
+                                      AutomationProperties.Name="Tool planning for small models"
+                                      ToolTip.Tip="Plan-then-execute for small models (opt-in — adds one LLM round-trip per turn)"
                                       Margin="0,8,0,0" />
                     </Grid>
                 </StackPanel>

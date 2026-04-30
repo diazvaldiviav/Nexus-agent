@@ -28,3 +28,4 @@
 
 ## Feature Analysis Artifacts
 - [Context Window Compaction](project_context_compaction.md) — ContextWindowManager, config changes, AgentService 4-point integration
+- [Phase 8.1 Plan-then-Execute Hardening](project_phase_8_1_hardening.md) — 15 ACs across 6 categories; Phase 7 ec8307a template; blockers A1/A2/A3 (per-step exception handling, [PLANNER] sentinel, LLM timeout)

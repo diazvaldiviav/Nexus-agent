@@ -435,4 +435,54 @@ public class ConfigValidatorTests
         Assert.NotNull(result.GetError("Mcp.ToolFilteringEnabled"));
     }
 
+    // ── ValidateToolPlanningEnabled ────────────────────────────────────────
+
+    [Fact]
+    public void ToolPlanningEnabled_RequiresLocalModel()
+    {
+        // Arrange: planning enabled but local provider/model are empty → error expected
+        var result = ConfigValidator.ValidateToolPlanningEnabled(
+            enabled: true,
+            local: new ModelProviderConfig { Provider = "", Model = "" });
+
+        Assert.NotNull(result);
+        Assert.Contains("local provider", result, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ToolPlanningEnabled_AllowsDefaultConfig()
+    {
+        // Arrange: planning disabled (default) → no error even if local is unconfigured
+        var result = ConfigValidator.ValidateToolPlanningEnabled(
+            enabled: false,
+            local: new ModelProviderConfig { Provider = "", Model = "" });
+
+        Assert.Null(result);
+    }
+
+    // ── ValidateToolPlanningTimeoutSeconds ─────────────────────────────────
+
+    [Theory]
+    [InlineData(4)]    // below min (5) → error
+    [InlineData(5)]    // at min boundary → ok
+    [InlineData(30)]   // in range → ok
+    [InlineData(300)]  // at max boundary → ok
+    [InlineData(301)]  // above max (300) → error
+    public void ToolPlanningTimeoutSeconds_RangeValidated(int value)
+    {
+        var result = ConfigValidator.ValidateToolPlanningTimeoutSeconds(value);
+
+        if (value == 4 || value == 301)
+        {
+            Assert.NotNull(result);   // out-of-range values must produce an error
+            // Error message must mention the valid range bounds (5..300)
+            Assert.Contains("5", result);
+            Assert.Contains("300", result);
+        }
+        else
+        {
+            Assert.Null(result);      // in-range values must produce no error
+        }
+    }
+
 }

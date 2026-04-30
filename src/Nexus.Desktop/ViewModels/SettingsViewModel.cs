@@ -32,6 +32,7 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private int _maxOutputBytes = 32000;
     [ObservableProperty] private bool _schemaValidationEnabled = true;
     [ObservableProperty] private bool _toolFilteringEnabled;
+    [ObservableProperty] private bool _toolPlanningEnabled;
     [ObservableProperty] private string _statusMessage = string.Empty;
     [ObservableProperty] private bool _hasError;
     [ObservableProperty] private bool _hasSuccess;
@@ -130,6 +131,7 @@ public partial class SettingsViewModel : ObservableObject
             MaxOutputBytes = _config.Mcp.MaxOutputBytes;
             SchemaValidationEnabled = _config.Mcp.SchemaValidationEnabled;
             ToolFilteringEnabled = _config.Mcp.ToolFilteringEnabled;
+            ToolPlanningEnabled = _config.Mcp.ToolPlanningEnabled;
 
             _lastSnapshot = CaptureSnapshot();
             IsDirty = false;
@@ -174,6 +176,7 @@ public partial class SettingsViewModel : ObservableObject
         _config.Mcp.MaxOutputBytes = MaxOutputBytes;
         _config.Mcp.SchemaValidationEnabled = SchemaValidationEnabled;
         _config.Mcp.ToolFilteringEnabled = ToolFilteringEnabled;
+        _config.Mcp.ToolPlanningEnabled = ToolPlanningEnabled;
 
         try
         {
@@ -202,7 +205,7 @@ public partial class SettingsViewModel : ObservableObject
         EmbeddingsModel, DecayLambda,
         SummarizationInterval, RecentInteractionsFetchLimit,
         MaxToolCallIterations, ToolCallTimeoutSeconds,
-        MaxOutputLines, MaxOutputBytes, SchemaValidationEnabled, ToolFilteringEnabled);
+        MaxOutputLines, MaxOutputBytes, SchemaValidationEnabled, ToolFilteringEnabled, ToolPlanningEnabled);
 
     private void CheckDirty()
     {
@@ -280,6 +283,12 @@ public partial class SettingsViewModel : ObservableObject
     }
 
     partial void OnToolFilteringEnabledChanged(bool value)
+    {
+        if (_isLoading) return;
+        CheckDirty();
+    }
+
+    partial void OnToolPlanningEnabledChanged(bool value)
     {
         if (_isLoading) return;
         CheckDirty();
@@ -550,7 +559,7 @@ public partial class SettingsViewModel : ObservableObject
         int SummarizationInterval, int RecentInteractionsFetchLimit,
         int MaxToolCallIterations, int ToolCallTimeoutSeconds,
         int MaxOutputLines, int MaxOutputBytes, bool SchemaValidationEnabled,
-        bool ToolFilteringEnabled);
+        bool ToolFilteringEnabled, bool ToolPlanningEnabled);
 }
 
 public sealed class McpServerRow

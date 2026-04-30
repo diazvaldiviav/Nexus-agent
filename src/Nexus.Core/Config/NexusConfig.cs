@@ -136,11 +136,13 @@ public class McpConfig
 {
     public int MaxToolCallIterations { get; set; } = 3;
     public int ToolCallTimeoutSeconds { get; set; } = 30;
+    public int ToolPlanningTimeoutSeconds { get; set; } = 30;
     public bool SchemaValidationEnabled { get; set; } = true;
     public bool TypeCoercionEnabled { get; set; } = true;
     public int MaxOutputLines { get; set; } = 200;
     public int MaxOutputBytes { get; set; } = 32000;
     public bool ToolFilteringEnabled { get; set; } = false;
+    public bool ToolPlanningEnabled { get; set; } = false;
     public List<McpServerEntry> Servers { get; set; } = new();
 }
 
