@@ -460,6 +460,35 @@ public class ConfigValidatorTests
         Assert.Null(result);
     }
 
+    // ── ValidateStepExecutionMaxAttempts ──────────────────────────────────
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(5)]
+    [InlineData(20)]
+    [InlineData(21)]
+    public void StepExecutionMaxAttempts_RangeValidated(int value)
+    {
+        var result = ConfigValidator.ValidateStepExecutionMaxAttempts(value);
+        if (value < 1 || value > 20)
+        {
+            Assert.NotNull(result);
+            Assert.Contains("1 and 20", result);
+        }
+        else
+        {
+            Assert.Null(result);
+        }
+    }
+
+    [Fact]
+    public void StepExecutionMaxAttempts_DefaultValue_IsFive()
+    {
+        var config = new NexusConfig();
+        Assert.Equal(5, config.Mcp.StepExecutionMaxAttempts);
+    }
+
     // ── ValidateToolPlanningTimeoutSeconds ─────────────────────────────────
 
     [Theory]
@@ -483,6 +512,324 @@ public class ConfigValidatorTests
         {
             Assert.Null(result);      // in-range values must produce no error
         }
+    }
+
+    // ── Phase 9: PlannerContextMaxBytes ──────────────────────────────────────
+
+    [Theory]
+    [InlineData(100)]    // below min (200) → error
+    [InlineData(200)]    // at min boundary → ok
+    [InlineData(1500)]   // default, in range → ok
+    [InlineData(16000)]  // at max boundary → ok
+    [InlineData(16001)]  // above max → error
+    public void PlannerContextMaxBytes_RangeValidated(int value)
+    {
+        var result = ConfigValidator.ValidatePlannerContextMaxBytes(value);
+
+        if (value == 100 || value == 16001)
+        {
+            Assert.NotNull(result);
+            Assert.Contains("200", result);
+            Assert.Contains("16000", result);
+        }
+        else
+        {
+            Assert.Null(result);
+        }
+    }
+
+    // ── Phase 9: PlannerContextMaxRecentTurns ────────────────────────────────
+
+    [Theory]
+    [InlineData(0)]   // below min (1) → error
+    [InlineData(1)]   // at min boundary → ok
+    [InlineData(4)]   // default → ok
+    [InlineData(20)]  // at max boundary → ok
+    [InlineData(21)]  // above max → error
+    public void PlannerContextMaxRecentTurns_RangeValidated(int value)
+    {
+        var result = ConfigValidator.ValidatePlannerContextMaxRecentTurns(value);
+
+        if (value == 0 || value == 21)
+        {
+            Assert.NotNull(result);
+            Assert.Contains("1", result);
+            Assert.Contains("20", result);
+        }
+        else
+        {
+            Assert.Null(result);
+        }
+    }
+
+    // ── Phase 9: PlannerContextMaxBytesPerTurn ───────────────────────────────
+
+    [Theory]
+    [InlineData(79)]    // below min (80) → error
+    [InlineData(80)]    // at min boundary → ok
+    [InlineData(280)]   // default → ok
+    [InlineData(4000)]  // at max boundary → ok
+    [InlineData(4001)]  // above max → error
+    public void PlannerContextMaxBytesPerTurn_RangeValidated(int value)
+    {
+        var result = ConfigValidator.ValidatePlannerContextMaxBytesPerTurn(value);
+
+        if (value == 79 || value == 4001)
+        {
+            Assert.NotNull(result);
+            Assert.Contains("80", result);
+            Assert.Contains("4000", result);
+        }
+        else
+        {
+            Assert.Null(result);
+        }
+    }
+
+    // ── Phase 9: PlannerContextEnabled default ───────────────────────────────
+
+    [Fact]
+    public void PlannerContextEnabled_DefaultValue_IsTrue()
+    {
+        var config = new NexusConfig();
+        Assert.True(config.Mcp.PlannerContextEnabled);
+    }
+
+    // ── Phase 9 Wave C: VerificationSnapshotTimeoutSeconds ──────────────────
+
+    [Theory]
+    [InlineData(0)]   // below min (1) → error
+    [InlineData(1)]   // at min boundary → ok
+    [InlineData(10)]  // default → ok
+    [InlineData(60)]  // at max boundary → ok
+    [InlineData(61)]  // above max → error
+    public void VerificationSnapshotTimeoutSeconds_RangeValidated(int value)
+    {
+        var result = ConfigValidator.ValidateVerificationSnapshotTimeoutSeconds(value);
+
+        if (value == 0 || value == 61)
+        {
+            Assert.NotNull(result);
+            Assert.Contains("1", result);
+            Assert.Contains("60", result);
+        }
+        else
+        {
+            Assert.Null(result);
+        }
+    }
+
+    [Fact]
+    public void VerificationSnapshotTimeoutSeconds_DefaultValue_IsTen()
+    {
+        var config = new NexusConfig();
+        Assert.Equal(10, config.Mcp.VerificationSnapshotTimeoutSeconds);
+    }
+
+    [Fact]
+    public void ToolVerificationEnabled_DefaultValue_IsTrue()
+    {
+        var config = new NexusConfig();
+        Assert.True(config.Mcp.ToolVerificationEnabled);
+    }
+
+    [Fact]
+    public void Validate_VerificationSnapshotTimeoutOutOfRange_ReturnsError()
+    {
+        var config = new NexusConfig();
+        config.Mcp.VerificationSnapshotTimeoutSeconds = 0;
+
+        var result = ConfigValidator.Validate(config);
+
+        Assert.False(result.IsValid);
+        Assert.NotNull(result.GetError("Mcp.VerificationSnapshotTimeoutSeconds"));
+    }
+
+    // ── AC-7: PathValidatorStrictDistance ────────────────────────────────
+
+    [Theory]
+    [InlineData(49)]    // below min (50) → error
+    [InlineData(50)]    // at min boundary → ok
+    [InlineData(90)]    // default → ok
+    [InlineData(100)]   // at max boundary → ok
+    [InlineData(101)]   // above max (100) → error
+    public void PathValidatorStrictDistance_RangeValidated(int value)
+    {
+        var result = ConfigValidator.ValidatePathValidatorStrictDistance(value);
+
+        if (value == 49 || value == 101)
+        {
+            Assert.NotNull(result);
+            Assert.Contains("50", result);
+            Assert.Contains("100", result);
+        }
+        else
+        {
+            Assert.Null(result);
+        }
+    }
+
+    [Fact]
+    public void PathValidatorStrictDistance_DefaultValue_IsEighty()
+    {
+        var config = new NexusConfig();
+        Assert.Equal(80, config.Mcp.PathValidatorStrictDistance);
+    }
+
+    // ── AC-1: PlannerHeuristicMinLength ───────────────────────────────────────
+
+    [Theory]
+    [InlineData(0)]    // below min (1) → error
+    [InlineData(1)]    // at min boundary → ok
+    [InlineData(16)]   // default → ok
+    [InlineData(200)]  // at max boundary → ok
+    [InlineData(201)]  // above max (200) → error
+    public void PlannerHeuristicMinLength_RangeValidated(int value)
+    {
+        var result = ConfigValidator.ValidatePlannerHeuristicMinLength(value);
+
+        if (value == 0 || value == 201)
+        {
+            Assert.NotNull(result);
+            Assert.Contains("1", result);
+            Assert.Contains("200", result);
+        }
+        else
+        {
+            Assert.Null(result);
+        }
+    }
+
+    // ── AC-3: PermissionConfig ────────────────────────────────────────────────
+
+    [Fact]
+    public void PermissionEnabled_DefaultTrue()
+    {
+        var config = new NexusConfig();
+        Assert.True(config.Permission.Enabled);
+    }
+
+    [Fact]
+    public void Permission_Enabled_ParsedFromYaml_NotDefaulted()
+    {
+        // Arrange — parse YAML that explicitly sets enabled: false
+        var yaml = "permission:\n  enabled: false\n";
+        var deserializer = new YamlDotNet.Serialization.DeserializerBuilder()
+            .WithNamingConvention(YamlDotNet.Serialization.NamingConventions.UnderscoredNamingConvention.Instance)
+            .IgnoreUnmatchedProperties()
+            .Build();
+
+        // Act
+        var config = deserializer.Deserialize<NexusConfig>(yaml);
+
+        // Assert
+        Assert.NotNull(config);
+        Assert.False(config.Permission.Enabled);
+    }
+
+    [Theory]
+    [InlineData("allow",   null)]
+    [InlineData("ask",     null)]
+    [InlineData("deny",    null)]
+    [InlineData("ALLOW",   null)]
+    [InlineData("garbage", "PermissionToolRule.Action must be")]
+    public void PermissionToolRule_Action_RejectsInvalidValues(string action, string? expectedErrorFragment)
+    {
+        var result = ConfigValidator.ValidatePermissionAction(action);
+
+        if (expectedErrorFragment is null)
+            Assert.Null(result);
+        else
+        {
+            Assert.NotNull(result);
+            Assert.Contains(expectedErrorFragment, result, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Theory]
+    [InlineData("allow",   null)]
+    [InlineData("ask",     null)]
+    [InlineData("deny",    null)]
+    [InlineData("DENY",    null)]
+    [InlineData("bad",     "PermissionToolRule.Action must be")]
+    public void PermissionToolRule_Patterns_RejectsInvalidValues(string action, string? expectedErrorFragment)
+    {
+        // The validator uses the same ValidatePermissionAction for pattern dict values.
+        var result = ConfigValidator.ValidatePermissionAction(action);
+
+        if (expectedErrorFragment is null)
+            Assert.Null(result);
+        else
+        {
+            Assert.NotNull(result);
+            Assert.Contains(expectedErrorFragment, result, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public void Validate_PermissionToolRule_InvalidAction_ReturnsError()
+    {
+        // Arrange
+        var config = new NexusConfig();
+        config.Permission.Tools["write_file"] = new PermissionToolRule { Action = "nope" };
+
+        // Act
+        var result = ConfigValidator.Validate(config);
+
+        // Assert
+        Assert.False(result.IsValid);
+        Assert.NotNull(result.GetError("Permission.Tools[write_file].Action"));
+    }
+
+    [Fact]
+    public void Validate_PermissionToolRule_InvalidPatternAction_ReturnsError()
+    {
+        // Arrange
+        var config = new NexusConfig();
+        config.Permission.Tools["delete_file"] = new PermissionToolRule
+        {
+            Action   = "ask",
+            Patterns = new Dictionary<string, string> { ["**/*.log"] = "invalid" }
+        };
+
+        // Act
+        var result = ConfigValidator.Validate(config);
+
+        // Assert
+        Assert.False(result.IsValid);
+        Assert.NotNull(result.GetError("Permission.Tools[delete_file].Patterns[**/*.log]"));
+    }
+
+    // ── Layer 2 (Sprint 10 follow-up): Embedding fallback config ─────────────────
+
+    [Fact]
+    public void ToolPlannerEmbeddingFallbackEnabled_DefaultIsTrue()
+    {
+        var config = new NexusConfig();
+        Assert.True(config.Mcp.ToolPlannerEmbeddingFallbackEnabled);
+    }
+
+    [Fact]
+    public void ToolPlannerEmbeddingMatchThreshold_DefaultIs065()
+    {
+        var config = new NexusConfig();
+        Assert.Equal(0.65f, config.Mcp.ToolPlannerEmbeddingMatchThreshold);
+    }
+
+    [Theory]
+    [InlineData(0.39f)]   // below min (0.40) → error
+    [InlineData(0.40f)]   // at min boundary → ok
+    [InlineData(0.65f)]   // default → ok
+    [InlineData(0.95f)]   // at max boundary → ok
+    [InlineData(0.96f)]   // above max → error
+    public void ToolPlannerEmbeddingMatchThreshold_RangeValidated(float value)
+    {
+        var error = ConfigValidator.ValidateToolPlannerEmbeddingMatchThreshold(value);
+
+        if (value < 0.40f || value > 0.95f)
+            Assert.NotNull(error);
+        else
+            Assert.Null(error);
     }
 
 }

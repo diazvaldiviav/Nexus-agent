@@ -186,7 +186,13 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IToolPlanner>(sp => new ToolPlanner(
             sp.GetRequiredService<LlmProviderFactory>(),
             config,
-            sp.GetService<ILogger<ToolPlanner>>()));
+            sp.GetService<ILogger<ToolPlanner>>(),
+            sp.GetService<IEmbeddingService>()));   // Layer 2: optional semantic fallback
+
+        services.AddSingleton<IPlannerContextBuilder>(sp =>
+            new PlannerContextBuilder(
+                config,
+                sp.GetService<ILogger<PlannerContextBuilder>>()));
 
         services.AddSingleton(sp => new ContextWindowManager(
             sp.GetRequiredService<IInteractionSummarizer>(),
@@ -203,6 +209,10 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<LlmProviderFactory>(),
             sp.GetRequiredService<IInteractionSummarizer>(),
             toolPlanner: sp.GetService<IToolPlanner>(),
+            plannerContextBuilder: sp.GetService<IPlannerContextBuilder>(),
+            toolVerifier: sp.GetService<IToolVerifier>(),
+            permissionGate: sp.GetService<IPermissionGate>(),         // optional — registered by CLI/Desktop
+            verificationCatalog: sp.GetService<IVerificationCatalog>(), // optional — registered by Connectors
             toolExecutor: sp.GetService<IToolExecutor>(),
             argumentValidator: sp.GetService<IToolArgumentValidator>(),
             schemaValidator: sp.GetService<ISchemaValidator>(),

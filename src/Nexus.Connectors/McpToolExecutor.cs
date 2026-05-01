@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Nexus.Connectors.ToolFiltering;
 using Nexus.Core.Abstractions;
@@ -47,6 +48,24 @@ public class McpToolExecutor : IToolExecutor
             return string.Empty;
 
         return _toolPromptFormatter.Format(tools, modelName);
+    }
+
+    public JsonElement? GetToolSchema(string toolName)
+    {
+        var resolution = _toolRegistry.ResolveTool(toolName);
+        return resolution.Tool?.InputSchema;
+    }
+
+    public object? GetToolDefinition(string toolName)
+    {
+        var resolution = _toolRegistry.ResolveTool(toolName);
+        return resolution.Tool;
+    }
+
+    public string GetToolServerName(string toolName)
+    {
+        var resolution = _toolRegistry.ResolveTool(toolName);
+        return resolution.Tool?.ServerName ?? string.Empty;
     }
 
     public async Task<string> InvokeToolAsync(

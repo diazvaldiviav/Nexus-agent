@@ -54,7 +54,12 @@ public class DoomLoopTests : IAsyncLifetime
         IToolExecutor? toolExecutor = null,
         NexusConfig? config = null)
     {
+        // AC-H1: disable Phase 9 defaults — doom-loop tests assert exact callCount == 3 and
+        // rely on undecorated tool-result strings for doom-loop signature matching;
+        // [VerificationWarning] decoration would corrupt the signature and break detection.
         config ??= new NexusConfig();
+        config.Mcp.PlannerContextEnabled = false;
+        config.Mcp.ToolVerificationEnabled = false;
         var search = new SemanticSearch(_connectionString);
         var memoryBuilder = new MemoryContextBuilder(_graph, search);
         var promptBuilder = new PromptBuilder(memoryBuilder, config.Agent, toolExecutor);

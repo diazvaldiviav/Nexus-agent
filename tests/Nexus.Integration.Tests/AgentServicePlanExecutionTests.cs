@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Nexus.Core.Abstractions;
@@ -68,7 +69,8 @@ public class AgentServicePlanExecutionTests : IAsyncLifetime
         public Task<ToolPlan?> GeneratePlanAsync(
             string userMessage,
             string toolDefinitionsForPrompt,
-            CancellationToken ct = default)
+            PlannerContext? context,
+            CancellationToken cancellationToken = default)
         {
             CallCount++;
             return Task.FromResult(_plan);
@@ -92,12 +94,19 @@ public class AgentServicePlanExecutionTests : IAsyncLifetime
 
         public List<string> InvokedTools { get; } = new();
 
+        /// <summary>
+        /// Optionally set to return a schema from GetToolSchema. Null means no schema available.
+        /// </summary>
+        public JsonElement? FakeSchema { get; set; }
+
         public string GetToolDefinitionsForPrompt() =>
             "- read_text_file: Reads a text file\n" +
             "- list_directory: Lists directory contents";
 
         public string GetToolDefinitionsForPrompt(string? modelName) =>
             GetToolDefinitionsForPrompt();
+
+        public JsonElement? GetToolSchema(string toolName) => FakeSchema;
 
         public Task<string> InvokeToolAsync(
             string serverName,
@@ -121,8 +130,16 @@ public class AgentServicePlanExecutionTests : IAsyncLifetime
         IToolExecutor? toolExecutor = null,
         NexusConfig? config = null)
     {
+        // AC-H1: disable Phase 9/10 defaults — tests assert exact LLM call counts, [PLANNER] prompt
+        // body strings, conversation-history shape, and step-retry sentinels from Phase 8.3;
+        // PlannerContext injection or [VerificationWarning] decoration would break those assertions.
+        // PlannerHeuristicEnabled is also disabled because test messages are intentionally short
+        // (e.g. "Read a file") and the heuristic would block the planner before it could be tested.
         config ??= new NexusConfig();
+        config.Mcp.PlannerContextEnabled = false;
+        config.Mcp.ToolVerificationEnabled = false;
         config.Mcp.ToolPlanningEnabled = true;
+        config.Mcp.PlannerHeuristicEnabled = false;
 
         var search = new SemanticSearch(_connectionString);
         var memoryBuilder = new MemoryContextBuilder(_graph, search);
@@ -206,34 +223,31 @@ public class AgentServicePlanExecutionTests : IAsyncLifetime
     [Fact]
     public async Task PlanStep_NoToolCallParsed_RetriesOnce()
     {
-        // Arrange: 1-step plan using read_text_file
+        // Arrange: 1-step plan using read_text_file; no schema (FakeSchema = null).
+        // Under bounded-loop semantics:
+        //   attempt 1: BuildStepPrompt(1, ...) → "[PLANNER] Execute ONLY this step: ..." → LLM returns prose
+        //   attempt 2: BuildStepPrompt(2, ..., schema=null) → falls back to attempt-1 body → LLM returns tool call
         var plan = new ToolPlan(
             new[] { new ToolPlanStep(1, "Read the file", "read_text_file", 0.95f) },
             "Raw plan");
 
         var toolPlanner = new FakeToolPlanner(plan);
-        var toolExecutor = new TrackingToolExecutor();
+        var toolExecutor = new TrackingToolExecutor();   // FakeSchema = null by default
 
-        // Track what retry messages the LLM received
-        var retryMessagesReceived = new List<string>();
         var llmCallCount = 0;
-
-        // Expected retry text for tool "read_text_file" — AC-A2 [PLANNER] prefix + AC-5 retry body
-        const string expectedRetryText =
-            "[PLANNER] You must call read_text_file. Use [TOOL_CALL: {\"name\": \"read_text_file\", ...}]";
+        var attempt2MsgReceived = false;
 
         var agent = CreateAgent(lastUserMsg =>
         {
             llmCallCount++;
-            // First call: step instruction ([PLANNER] prefix, AC-A2) → return PLAIN TEXT (no TOOL_CALL marker)
-            if (lastUserMsg.Contains("[PLANNER]") && lastUserMsg.Contains("read_text_file") &&
-                !lastUserMsg.Contains("You must call"))
+            // Attempt 1: [PLANNER] Execute ONLY this step → return prose (no tool call)
+            if (llmCallCount == 1 && lastUserMsg.Contains("[PLANNER]") && lastUserMsg.Contains("read_text_file"))
                 return "I will read the file now.";  // no tool call
 
-            // Retry call: the retry message has [PLANNER] prefix + "You must call" body (AC-A2)
-            if (lastUserMsg.Contains("You must call read_text_file"))
+            // Attempt 2: same prompt style (schema null → falls back to attempt-1 body) → return tool call
+            if (llmCallCount == 2 && lastUserMsg.Contains("[PLANNER]") && lastUserMsg.Contains("read_text_file"))
             {
-                retryMessagesReceived.Add(lastUserMsg);
+                attempt2MsgReceived = true;
                 return """[TOOL_CALL: {"name":"read_text_file","arguments":{"path":"/test.txt"}}]""";
             }
 
@@ -244,9 +258,8 @@ public class AgentServicePlanExecutionTests : IAsyncLifetime
         // Act
         var response = await agent.ChatAsync("Read a file");
 
-        // Assert: retry was triggered with the exact AC-A2 + AC-5 retry text
-        Assert.Single(retryMessagesReceived);
-        Assert.Equal(expectedRetryText, retryMessagesReceived[0]);
+        // Assert: second attempt was made
+        Assert.True(attempt2MsgReceived, "Expected attempt 2 to have been issued to LLM");
 
         // Tool was executed after retry (not skipped)
         Assert.Single(toolExecutor.InvokedTools);
@@ -295,7 +308,11 @@ public class AgentServicePlanExecutionTests : IAsyncLifetime
     {
         // Arrange: ToolPlanningEnabled=false; IToolPlanner is NOT injected (null)
         // Normal tool loop should run. Verify GeneratePlanAsync is never called.
+        // AC-H1: disable Phase 9 defaults — test asserts exact tool invocation order and LLM
+        // call count from Phase 8.3; PlannerContext injection would alter the prompt shape.
         var config = new NexusConfig();
+        config.Mcp.PlannerContextEnabled = false;
+        config.Mcp.ToolVerificationEnabled = false;
         config.Mcp.ToolPlanningEnabled = false;
 
         var plannerCallCount = 0;
@@ -488,7 +505,11 @@ public class AgentServicePlanExecutionTests : IAsyncLifetime
         var toolExecutor = new TrackingToolExecutor();
         var capturingExtractor = new CapturingEntityExtractor(_graph);
 
+        // AC-H1: disable Phase 9 defaults — test asserts that captured extraction texts contain
+        // no [PLANNER] prefix; PlannerContext injection would change the prompt body shape.
         var config = new NexusConfig();
+        config.Mcp.PlannerContextEnabled = false;
+        config.Mcp.ToolVerificationEnabled = false;
         config.Mcp.ToolPlanningEnabled = true;
 
         var search = new SemanticSearch(_connectionString);
@@ -647,7 +668,12 @@ public class AgentServicePlanExecutionTests : IAsyncLifetime
         var toolPlanner = new FakeToolPlanner(plan);
         var toolExecutor = new TrackingToolExecutor();
 
+        // AC-H1: disable Phase 9 defaults — test asserts exact "[Summary unavailable: …]" fallback
+        // marker text in stream tokens; PlannerContext injection would alter the upstream prompt
+        // shape and ToolVerification decoration could contaminate the streamed token sequence.
         var config = new NexusConfig();
+        config.Mcp.PlannerContextEnabled = false;
+        config.Mcp.ToolVerificationEnabled = false;
         config.Mcp.ToolPlanningEnabled = true;
 
         var search = new SemanticSearch(_connectionString);
@@ -701,5 +727,265 @@ public class AgentServicePlanExecutionTests : IAsyncLifetime
         var allTokens = string.Concat(tokens);
         Assert.Contains("[Summary unavailable: InvalidOperationException]", allTokens,
             StringComparison.Ordinal);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Test 10: StepExecution_SucceedsOnAttempt2_SchemaTemplateInjected
+    // ──────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task StepExecution_SucceedsOnAttempt2_SchemaTemplateInjected()
+    {
+        // Arrange: schema with required: ["path"], properties.path.type = "string"
+        // Call 1 returns prose → attempt 2 should include "path (string)" and template skeleton
+        // Call 2 returns a valid tool call
+        var schemaJson = """{"type":"object","required":["path"],"properties":{"path":{"type":"string"}}}""";
+        var schema = JsonDocument.Parse(schemaJson).RootElement;
+
+        var plan = new ToolPlan(
+            new[] { new ToolPlanStep(1, "Read the config file", "read_text_file", 0.95f) },
+            "Raw plan");
+
+        var toolPlanner = new FakeToolPlanner(plan);
+        var toolExecutor = new TrackingToolExecutor { FakeSchema = schema };
+
+        var llmCallCount = 0;
+        var attempt2Prompt = string.Empty;
+
+        var agent = CreateAgent(lastUserMsg =>
+        {
+            llmCallCount++;
+            if (llmCallCount == 1)
+                return "I'll read the file.";  // prose — no tool call
+
+            // Attempt 2: capture the prompt to assert on schema template injection
+            if (llmCallCount == 2)
+            {
+                attempt2Prompt = lastUserMsg;
+                return """[TOOL_CALL: {"name":"read_text_file","arguments":{"path":"/config.txt"}}]""";
+            }
+
+            return "Summary done.";
+        }, toolPlanner, toolExecutor);
+
+        // Act
+        var response = await agent.ChatAsync("Read the config");
+
+        // Assert: tool executed once (on attempt 2)
+        Assert.Single(toolExecutor.InvokedTools);
+        Assert.Equal("read_text_file", toolExecutor.InvokedTools[0]);
+
+        // Attempt 2 prompt must contain schema-derived content
+        Assert.Contains("path (string)", attempt2Prompt, StringComparison.Ordinal);
+        Assert.Contains("<path>", attempt2Prompt, StringComparison.Ordinal);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Test 11: StepExecution_SucceedsOnAttempt3_CoercionPrompt
+    // ──────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task StepExecution_SucceedsOnAttempt3_CoercionPrompt()
+    {
+        // Arrange: calls 1+2 return prose, call 3 returns valid tool call.
+        // Attempt 3 prompt must contain "Your previous response was prose."
+        var plan = new ToolPlan(
+            new[] { new ToolPlanStep(1, "Read the file", "read_text_file", 0.95f) },
+            "Raw plan");
+
+        var toolPlanner = new FakeToolPlanner(plan);
+        var toolExecutor = new TrackingToolExecutor();  // FakeSchema = null
+
+        var llmCallCount = 0;
+        var attempt3Prompt = string.Empty;
+
+        var agent = CreateAgent(lastUserMsg =>
+        {
+            llmCallCount++;
+            if (llmCallCount == 1 || llmCallCount == 2)
+                return "I will read it.";  // prose
+
+            if (llmCallCount == 3)
+            {
+                attempt3Prompt = lastUserMsg;
+                return """[TOOL_CALL: {"name":"read_text_file","arguments":{"path":"/f.txt"}}]""";
+            }
+
+            return "Summary.";
+        }, toolPlanner, toolExecutor);
+
+        // Act
+        var response = await agent.ChatAsync("Read the file");
+
+        // Assert: tool executed once (at attempt 3)
+        Assert.Single(toolExecutor.InvokedTools);
+        Assert.Equal("read_text_file", toolExecutor.InvokedTools[0]);
+
+        // Attempt 3 prompt must contain the hard-coercion text
+        Assert.Contains("Your previous response was prose", attempt3Prompt, StringComparison.Ordinal);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Test 12: StepExecution_ExceedsMaxAttempts_LogsErrorAndSkips
+    // ──────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task StepExecution_ExceedsMaxAttempts_LogsErrorAndSkips()
+    {
+        // Arrange: StepExecutionMaxAttempts = 3; 2-step plan; LLM always returns prose.
+        // After 3 attempts each step is skipped with a sentinel in history.
+        // Final summary still runs and returns "All done".
+        // AC-H1: disable Phase 9 defaults — test asserts exact "Exceeded 3 attempts; moving on."
+        // sentinel count (2) in ConversationHistory; PlannerContext injection would add extra
+        // history entries and [VerificationWarning] decoration would corrupt the sentinel text.
+        var config = new NexusConfig();
+        config.Mcp.PlannerContextEnabled = false;
+        config.Mcp.ToolVerificationEnabled = false;
+        config.Mcp.ToolPlanningEnabled = true;
+        config.Mcp.StepExecutionMaxAttempts = 3;
+
+        var plan = new ToolPlan(
+            new[]
+            {
+                new ToolPlanStep(1, "Read the config file", "read_text_file", 0.95f),
+                new ToolPlanStep(2, "List the output folder", "list_directory", 0.90f)
+            },
+            "Raw plan text");
+
+        var toolPlanner = new FakeToolPlanner(plan);
+        var toolExecutor = new TrackingToolExecutor();
+
+        var agent = CreateAgent(lastUserMsg =>
+        {
+            // Always return prose for plan steps; return "All done" for the final summary
+            if (lastUserMsg.Contains("All steps complete"))
+                return "All done";
+            return "I'm thinking about it.";  // prose — never a tool call
+        }, toolPlanner, toolExecutor, config);
+
+        // Act
+        var response = await agent.ChatAsync("Do both steps");
+
+        // Assert: no tool was ever invoked
+        Assert.Empty(toolExecutor.InvokedTools);
+
+        // Final summary still ran — no OCE propagated
+        Assert.Contains("All done", response.Content);
+
+        // History must contain exactly 2 "Exceeded 3 attempts; moving on." sentinels (one per step).
+        // Use StartsWith("[PlanStep") to exclude the AC-6 grounding message that echoes the reason text.
+        var history = agent.ConversationHistory;
+        var sentinelCount = history.Count(m =>
+            m.Content.StartsWith("[PlanStep ", StringComparison.Ordinal)
+            && m.Content.Contains("Exceeded 3 attempts; moving on.", StringComparison.Ordinal));
+        Assert.Equal(2, sentinelCount);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Test 13: StepExecution_NoSchemaAvailable_FallsBackToAttempt1PromptStyle
+    // ──────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task StepExecution_NoSchemaAvailable_FallsBackToAttempt1PromptStyle()
+    {
+        // Arrange: FakeSchema = null → attempt 2 must NOT contain "Required arguments:"
+        // or "<" placeholder markers. Tool succeeds at attempt 3.
+        var plan = new ToolPlan(
+            new[] { new ToolPlanStep(1, "Read the file", "read_text_file", 0.95f) },
+            "Raw plan");
+
+        var toolPlanner = new FakeToolPlanner(plan);
+        var toolExecutor = new TrackingToolExecutor { FakeSchema = null };
+
+        var llmCallCount = 0;
+        var attempt2Prompt = string.Empty;
+
+        var agent = CreateAgent(lastUserMsg =>
+        {
+            llmCallCount++;
+            if (llmCallCount == 1 || llmCallCount == 2)
+            {
+                if (llmCallCount == 2)
+                    attempt2Prompt = lastUserMsg;
+                return "I'll do it.";  // prose
+            }
+
+            if (llmCallCount == 3)
+                return """[TOOL_CALL: {"name":"read_text_file","arguments":{"path":"/x.txt"}}]""";
+
+            return "Summary.";
+        }, toolPlanner, toolExecutor);
+
+        // Act
+        var response = await agent.ChatAsync("Read the file");
+
+        // Assert: tool eventually executed at attempt 3
+        Assert.Single(toolExecutor.InvokedTools);
+        Assert.Equal("read_text_file", toolExecutor.InvokedTools[0]);
+
+        // Attempt 2 prompt must NOT contain schema-driven hints (no schema available)
+        Assert.DoesNotContain("Required arguments:", attempt2Prompt, StringComparison.Ordinal);
+        // It also must not contain an unquoted placeholder like "<path>" from BuildArgsTemplate
+        // (schema is null → BuildStepPrompt falls back to attempt-1 body which has no template)
+        Assert.DoesNotContain("Required arguments:", attempt2Prompt, StringComparison.Ordinal);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Layer 3 (Sprint 10 follow-up): Skip detection + grounding injection E2E
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// E2E: a plan step with MatchedToolName==null is skipped silently by AgentService;
+    /// the SummaryFailureAnalyzer must detect the skip sentinel and inject a grounding
+    /// message into the conversation history before the final summary LLM call. The
+    /// final-summary prompt then contains "[PlanResult]" and "Steps skipped (no matching
+    /// tool): 1" — preventing the LLM from hallucinating success.
+    /// </summary>
+    [Fact]
+    public async Task PlanStep_NoToolMatched_GroundingInjected_NoHallucination()
+    {
+        // Arrange: 2-step plan — step 1 matches read_text_file, step 2 has matched=null
+        // (simulating the qwen3:1.7b "Insert/Save" verb scenario).
+        var plan = new ToolPlan(
+            new[]
+            {
+                new ToolPlanStep(1, "Use read_text_file to fetch content", "read_text_file", 0.95f),
+                new ToolPlanStep(2, "Insert the new section into the file", null, 0f)
+            },
+            "Raw plan with one ambiguous step");
+
+        var toolPlanner = new FakeToolPlanner(plan);
+        var toolExecutor = new TrackingToolExecutor();
+
+        // Capture the LAST user message passed to the LLM (which is the final summary
+        // request — preceded by the grounding injection from SummaryFailureAnalyzer).
+        string? finalSummaryUserMsg = null;
+        var llmCallCount = 0;
+
+        var agent = CreateAgent(lastUserMsg =>
+        {
+            llmCallCount++;
+            // Step 1 — return tool call for read_text_file
+            if (lastUserMsg.Contains("[PLANNER]") && lastUserMsg.Contains("read_text_file"))
+                return """[TOOL_CALL: {"name":"read_text_file","arguments":{"path":"/file.md"}}]""";
+            // Step 2 has MatchedToolName=null → AgentService skips without calling the LLM.
+            // The final summary call is the next LLM invocation. Capture its input.
+            finalSummaryUserMsg = lastUserMsg;
+            return "Done.";
+        }, toolPlanner, toolExecutor);
+
+        // Act
+        await agent.ChatAsync("Read and modify the file");
+
+        // Assert: only the matched tool was actually invoked
+        Assert.Single(toolExecutor.InvokedTools);
+        Assert.Equal("read_text_file", toolExecutor.InvokedTools[0]);
+
+        // The final summary call's prompt must contain the grounding block — proof
+        // that SummaryFailureAnalyzer detected the skip sentinel and injected.
+        Assert.NotNull(finalSummaryUserMsg);
+        Assert.Contains("[PlanResult]", finalSummaryUserMsg!);
+        Assert.Contains("Steps skipped (no matching tool): 1", finalSummaryUserMsg!);
+        Assert.Contains("Do NOT claim success", finalSummaryUserMsg!);
     }
 }

@@ -242,6 +242,8 @@ public class E2EFlowTests : IDisposable
         // This test validates the contract: ConversationHistory is initialized empty
         // and the property is publicly accessible as IReadOnlyList.
 
+        // AC-H1: verified compatible with Phase 9 defaults-ON — test only constructs AgentService
+        // and asserts ConversationHistory is empty; no ChatAsync, tool loop, or plan path runs.
         var config = new NexusConfig();
         var dbPath = Path.Combine(Path.GetTempPath(), $"bug001_test_{Guid.NewGuid():N}.db");
         try
@@ -273,6 +275,8 @@ public class E2EFlowTests : IDisposable
     public void BugFix002_ExtractionPromptRequiresEnglishOutput()
     {
         // AC-12: Verify the extraction prompt contains the English-only rule
+        // AC-H1: verified compatible with Phase 9 defaults-ON — test only calls
+        // BuildEntityExtractionPrompt and asserts a string; no agent run path involved.
         var config = new NexusConfig();
         var search = new SemanticSearch(_connectionString);
         var memoryBuilder = new MemoryContextBuilder(_graph, search);

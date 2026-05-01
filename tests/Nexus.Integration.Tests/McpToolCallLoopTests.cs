@@ -58,7 +58,12 @@ public class McpToolCallLoopTests : IAsyncLifetime
         NexusConfig? config = null,
         ISchemaValidator? schemaValidator = null)
     {
+        // AC-H1: disable Phase 9 defaults — tests assert exact tool invocation counts,
+        // LLM call counts, and result string shapes from Phase 8.3; PlannerContext injection
+        // or [VerificationWarning] decoration would break those assertions.
         config ??= new NexusConfig();
+        config.Mcp.PlannerContextEnabled = false;
+        config.Mcp.ToolVerificationEnabled = false;
         var search = new SemanticSearch(_connectionString);
         var memoryBuilder = new MemoryContextBuilder(_graph, search);
         var promptBuilder = new PromptBuilder(memoryBuilder, config.Agent, toolExecutor);
@@ -170,7 +175,10 @@ public class McpToolCallLoopTests : IAsyncLifetime
     public async Task ChatAsync_ConfiguredMaxIterations_RespectsLimit()
     {
         // Arrange: limit to 1 iteration; LLM always returns a tool call
+        // AC-H1: disable Phase 9 defaults — test asserts exact toolInvocations == 1 count.
         var config = new NexusConfig();
+        config.Mcp.PlannerContextEnabled = false;
+        config.Mcp.ToolVerificationEnabled = false;
         config.Mcp.MaxToolCallIterations = 1;
 
         var toolInvocations = 0;
@@ -196,7 +204,10 @@ public class McpToolCallLoopTests : IAsyncLifetime
     public async Task ChatAsync_ConfiguredTimeout_UsesConfigValue()
     {
         // Arrange: 1-second timeout with a tool that delays 5 seconds
+        // AC-H1: disable Phase 9 defaults — test asserts exact "timed out after N seconds" string.
         var config = new NexusConfig();
+        config.Mcp.PlannerContextEnabled = false;
+        config.Mcp.ToolVerificationEnabled = false;
         config.Mcp.ToolCallTimeoutSeconds = 1;
 
         var delayExecutor = new DelayToolExecutor();
@@ -228,7 +239,10 @@ public class McpToolCallLoopTests : IAsyncLifetime
             return "should not reach here";
         });
 
+        // AC-H1: disable Phase 9 defaults — test asserts exact callCount == 2 and toolInvoked == false.
         var config = new NexusConfig();
+        config.Mcp.PlannerContextEnabled = false;
+        config.Mcp.ToolVerificationEnabled = false;
         config.Mcp.SchemaValidationEnabled = true;
 
         var callCount = 0;
@@ -264,7 +278,10 @@ public class McpToolCallLoopTests : IAsyncLifetime
             return "should not reach here";
         });
 
+        // AC-H1: disable Phase 9 defaults — test asserts exact callCount == 2 and toolInvoked == false.
         var config = new NexusConfig();
+        config.Mcp.PlannerContextEnabled = false;
+        config.Mcp.ToolVerificationEnabled = false;
         config.Mcp.SchemaValidationEnabled = true;
 
         var callCount = 0;
@@ -305,7 +322,10 @@ public class McpToolCallLoopTests : IAsyncLifetime
             return "tool executed successfully";
         });
 
+        // AC-H1: disable Phase 9 defaults — test asserts exact callCount == 2 and toolInvoked == true.
         var config = new NexusConfig();
+        config.Mcp.PlannerContextEnabled = false;
+        config.Mcp.ToolVerificationEnabled = false;
         config.Mcp.SchemaValidationEnabled = false;
 
         var callCount = 0;
@@ -341,7 +361,10 @@ public class McpToolCallLoopTests : IAsyncLifetime
             return "tool result from passthrough";
         });
 
+        // AC-H1: disable Phase 9 defaults — test asserts exact callCount == 2 and toolInvoked == true.
         var config = new NexusConfig();
+        config.Mcp.PlannerContextEnabled = false;
+        config.Mcp.ToolVerificationEnabled = false;
         config.Mcp.SchemaValidationEnabled = true;
 
         var callCount = 0;

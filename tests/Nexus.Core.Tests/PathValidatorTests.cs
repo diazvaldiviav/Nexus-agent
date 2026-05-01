@@ -562,6 +562,318 @@ public class PathValidatorTests : IDisposable
         Assert.EndsWith(Path.Combine("ecomerce", "docs", "model"), (string)result.CorrectedArguments!["path"], StringComparison.OrdinalIgnoreCase);
     }
 
+    // --- AC-7: stale-state guard ---
+
+    [Fact]
+    public async Task Validate_OriginalPathExists_DoesNotCorrectEvenWithCloseMatch()
+    {
+        // Arrange — two files with nearly identical names; the original exists.
+        var isolatedDir = Path.Combine(Path.GetTempPath(), "nexus_ac7_test_" + Guid.NewGuid().ToString("N")[..8]);
+        try
+        {
+            Directory.CreateDirectory(isolatedDir);
+            var fooPath = Path.Combine(isolatedDir, "foo.txt");
+            var foaPath = Path.Combine(isolatedDir, "foa.txt");
+            File.WriteAllText(fooPath, "original");
+            File.WriteAllText(foaPath, "neighbor");
+
+            var validator = CreateValidator(new List<string> { isolatedDir });
+            var args = new Dictionary<string, object>
+            {
+                ["path"] = fooPath
+            };
+
+            // Act
+            var result = await validator.ValidateAsync("read_file", args);
+
+            // Assert — existence wins: must return the original, not the fuzzy neighbor.
+            Assert.True(result.IsValid);
+            Assert.False(result.WasCorrected);
+            Assert.Equal(fooPath, (string)result.CorrectedArguments!["path"]);
+        }
+        finally
+        {
+            try { Directory.Delete(isolatedDir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task Validate_OriginalMissing_StrictDistanceRejected_WhenScoreBelowThreshold()
+    {
+        // Arrange — multiple index.html files exist (the actual Bug 4 scenario: ambiguous
+        // basename). The model's path includes deep non-existent subdirectories that push the
+        // full-path similarity score well below 90. With basename-uniqueness short-circuit,
+        // the strict-distance gate only applies when count > 1; this test exercises that path.
+        var isolatedDir = Path.Combine(Path.GetTempPath(), "nexus_ac7_strict_" + Guid.NewGuid().ToString("N")[..8]);
+        try
+        {
+            Directory.CreateDirectory(isolatedDir);
+            var existingFile = Path.Combine(isolatedDir, "index.html");
+            File.WriteAllText(existingFile, "content");
+
+            // Second index.html in a sibling dir → basename "index.html" is now ambiguous
+            // (count > 1), so strict-distance must apply.
+            var siblingDir = Path.Combine(isolatedDir, "sprint_1_tasks");
+            Directory.CreateDirectory(siblingDir);
+            File.WriteAllText(Path.Combine(siblingDir, "index.html"), "decoy");
+
+            // Build a deeply nested missing path so that the full-path Fuzz.Ratio score
+            // between this path and existingFile is reliably < 90 regardless of how
+            // long the temp directory prefix is. The extra segments add ~50 characters.
+            var missingPath = Path.Combine(
+                isolatedDir,
+                "archived", "backups", "old_sprint", "2024_q3", "index.html");
+
+            var config = new NexusConfig
+            {
+                Mcp = new McpConfig
+                {
+                    PathValidatorStrictDistance = 90,
+                    Servers = new List<McpServerEntry>
+                    {
+                        new()
+                        {
+                            Name = "filesystem",
+                            Args = new List<string>
+                            {
+                                "-y",
+                                "@modelcontextprotocol/server-filesystem",
+                                isolatedDir
+                            }
+                        }
+                    }
+                }
+            };
+            var registry = new ToolRegistry();
+            var validator = new PathValidator(config, registry, cacheTtl: TimeSpan.FromMilliseconds(100));
+            var args = new Dictionary<string, object>
+            {
+                ["path"] = missingPath
+            };
+
+            // Act
+            var result = await validator.ValidateAsync("read_file", args);
+
+            // Assert — strict guard rejects the distant match.
+            Assert.False(result.IsValid);
+            Assert.NotNull(result.ErrorMessage);
+            Assert.True(
+                result.ErrorMessage!.Contains("too distant") || result.ErrorMessage.Contains("score"),
+                $"Expected error to mention 'too distant' or 'score', got: {result.ErrorMessage}");
+        }
+        finally
+        {
+            try { Directory.Delete(isolatedDir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task Validate_OriginalMissing_StrictDistanceAccepted_WhenScoreAboveThreshold()
+    {
+        // Arrange — index.html exists; raw path differs only by case → very high similarity score.
+        var isolatedDir = Path.Combine(Path.GetTempPath(), "nexus_ac7_accept_" + Guid.NewGuid().ToString("N")[..8]);
+        try
+        {
+            Directory.CreateDirectory(isolatedDir);
+            var existingFile = Path.Combine(isolatedDir, "index.html");
+            File.WriteAllText(existingFile, "content");
+
+            // On Windows, Path.GetFullPath normalizes case, so the raw path and existingFile
+            // will produce the same normalized string — triggering the fast-path.
+            // Use a fuzzy variant: "Index.html" on a case-sensitive FS, or test via a
+            // slightly different name that still scores above the threshold.
+            // We use a low strict threshold (50) to ensure even a moderate score passes.
+            var rawPath = Path.Combine(isolatedDir, "index.htm");   // missing extension: scores high
+
+            var config = new NexusConfig
+            {
+                Mcp = new McpConfig
+                {
+                    PathValidatorStrictDistance = 50,   // low threshold — moderate match suffices
+                    Servers = new List<McpServerEntry>
+                    {
+                        new()
+                        {
+                            Name = "filesystem",
+                            Args = new List<string>
+                            {
+                                "-y",
+                                "@modelcontextprotocol/server-filesystem",
+                                isolatedDir
+                            }
+                        }
+                    }
+                }
+            };
+            var registry = new ToolRegistry();
+            var validator = new PathValidator(config, registry, fuzzyThreshold: 50, cacheTtl: TimeSpan.FromMilliseconds(100));
+            var args = new Dictionary<string, object>
+            {
+                ["path"] = rawPath
+            };
+
+            // Act
+            var result = await validator.ValidateAsync("read_file", args);
+
+            // Assert — high-confidence match accepted; corrected to the real file.
+            Assert.True(result.IsValid, $"Expected valid but got error: {result.ErrorMessage}");
+            Assert.True(result.WasCorrected);
+            Assert.Equal(existingFile, (string)result.CorrectedArguments!["path"]);
+        }
+        finally
+        {
+            try { Directory.Delete(isolatedDir, true); } catch { }
+        }
+    }
+
+    // --- Sprint 10 follow-up: basename-uniqueness short-circuit ---
+
+    [Fact]
+    public async Task Validate_UniqueBasename_AcceptsLowFullPathScore_WithinAllowedDirs()
+    {
+        // Arrange — single "ecomerce" directory in the catalog. The model passes a path
+        // whose CWD-prefix differs significantly from the real path, dragging the full-path
+        // Fuzz.Ratio below the strict threshold (90). With basename-uniqueness short-circuit,
+        // the unique basename means no ambiguity → accept regardless of full-path score.
+        // This is the real-world repro: "nexus/ecomerce" → "D:\Nexus\ecomerce".
+        var isolatedDir = Path.Combine(Path.GetTempPath(), "nexus_ac7_unique_" + Guid.NewGuid().ToString("N")[..8]);
+        try
+        {
+            Directory.CreateDirectory(isolatedDir);
+            var realDir = Path.Combine(isolatedDir, "ecomerce");
+            Directory.CreateDirectory(realDir);
+
+            // Build a path whose full-path Fuzz.Ratio against realDir is well below 90.
+            // We reference the same basename through a deep non-existent subtree so the
+            // shared-prefix penalty pushes the score down.
+            var missingPath = Path.Combine(
+                isolatedDir,
+                "deeply", "nested", "fake", "branches", "ecomerce");
+
+            var validator = CreateValidator(new List<string> { isolatedDir });
+            var args = new Dictionary<string, object>
+            {
+                ["path"] = missingPath
+            };
+
+            // Act
+            var result = await validator.ValidateAsync("list_directory", args);
+
+            // Assert — unique basename → accepted; corrected to the real directory.
+            Assert.True(result.IsValid, $"Expected valid but got error: {result.ErrorMessage}");
+            Assert.True(result.WasCorrected);
+            Assert.Equal(realDir, (string)result.CorrectedArguments!["path"]);
+        }
+        finally
+        {
+            try { Directory.Delete(isolatedDir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task Validate_FuzzyBasenameTypo_UniqueCandidate_AcceptsCorrection()
+    {
+        // Arrange — real-world repro: model writes "ecommerce" (English standard) but the
+        // actual folder is "ecomerce" (single m, the user's spelling). Basename is NOT an
+        // exact match, but is the only fuzzy candidate in the catalog (typo correction was
+        // exactly the PathValidator's original purpose). With basename-uniqueness in the
+        // fuzzy branch, this case is accepted; without it, the strict-distance gate (90)
+        // rejects because the long CWD-prefix divergence drags the full-path score below.
+        var isolatedDir = Path.Combine(Path.GetTempPath(), "nexus_ac7_typo_" + Guid.NewGuid().ToString("N")[..8]);
+        try
+        {
+            Directory.CreateDirectory(isolatedDir);
+            var realDir = Path.Combine(isolatedDir, "ecomerce");      // single m (the user's folder)
+            Directory.CreateDirectory(realDir);
+
+            // Model produced typo with extra m AND deep nesting that would tank full-path score.
+            var typoPath = Path.Combine(
+                isolatedDir,
+                "deeply", "nested", "fake", "branches", "ecommerce");  // double m + bogus prefix
+
+            var validator = CreateValidator(new List<string> { isolatedDir });
+            var args = new Dictionary<string, object>
+            {
+                ["path"] = typoPath
+            };
+
+            // Act
+            var result = await validator.ValidateAsync("list_directory", args);
+
+            // Assert — single fuzzy candidate → typo corrected to real folder.
+            Assert.True(result.IsValid, $"Expected valid but got error: {result.ErrorMessage}");
+            Assert.True(result.WasCorrected);
+            Assert.Equal(realDir, (string)result.CorrectedArguments!["path"]);
+        }
+        finally
+        {
+            try { Directory.Delete(isolatedDir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task Validate_AmbiguousBasename_StillRequiresStrictDistance()
+    {
+        // Arrange — TWO directories named "models" in different branches → basename ambiguous
+        // (count > 1). With ambiguity, the strict-distance gate must remain active, falling
+        // back to full-path Fuzz.Ratio to disambiguate. A deeply nested missing path with
+        // low full-path score against the closest match must be rejected (Bug 4 protection).
+        // Test uses explicit strict=90 so it is robust to future default-threshold tweaks.
+        var isolatedDir = Path.Combine(Path.GetTempPath(), "nexus_ac7_ambig_" + Guid.NewGuid().ToString("N")[..8]);
+        try
+        {
+            Directory.CreateDirectory(isolatedDir);
+            Directory.CreateDirectory(Path.Combine(isolatedDir, "src", "models"));
+            Directory.CreateDirectory(Path.Combine(isolatedDir, "tests", "models"));
+
+            // Build a deeply nested missing path so the full-path score against either
+            // candidate stays below the explicit strict threshold (90).
+            var missingPath = Path.Combine(
+                isolatedDir,
+                "archived", "backups", "old_sprint", "2024_q3", "models");
+
+            var config = new NexusConfig
+            {
+                Mcp = new McpConfig
+                {
+                    PathValidatorStrictDistance = 90,   // explicit — robust to default changes
+                    Servers = new List<McpServerEntry>
+                    {
+                        new()
+                        {
+                            Name = "filesystem",
+                            Args = new List<string>
+                            {
+                                "-y",
+                                "@modelcontextprotocol/server-filesystem",
+                                isolatedDir
+                            }
+                        }
+                    }
+                }
+            };
+            var validator = new PathValidator(config, new ToolRegistry(), cacheTtl: TimeSpan.FromMilliseconds(100));
+            var args = new Dictionary<string, object>
+            {
+                ["path"] = missingPath
+            };
+
+            // Act
+            var result = await validator.ValidateAsync("list_directory", args);
+
+            // Assert — ambiguous basename + low full-path score → strict guard still rejects.
+            Assert.False(result.IsValid);
+            Assert.NotNull(result.ErrorMessage);
+            Assert.True(
+                result.ErrorMessage!.Contains("too distant") || result.ErrorMessage.Contains("score"),
+                $"Expected error to mention 'too distant' or 'score', got: {result.ErrorMessage}");
+        }
+        finally
+        {
+            try { Directory.Delete(isolatedDir, true); } catch { }
+        }
+    }
+
     // --- IdentifyPathParameters ---
 
     [Fact]

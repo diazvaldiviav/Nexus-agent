@@ -5,7 +5,9 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Nexus.Connectors;
 using Nexus.Core;
+using Nexus.Core.Abstractions;
 using Nexus.Core.Config;
+using Nexus.Core.Services;
 using Nexus.Desktop.ViewModels;
 using Nexus.Desktop.Views;
 using Nexus.Memory.Abstractions;
@@ -30,6 +32,7 @@ public partial class App : Application
         serviceCollection.AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning));
         serviceCollection.AddNexusAgent(config);
         serviceCollection.AddNexusMcp();
+        serviceCollection.AddSingleton<IPermissionGate, AutoApprovePermissionGate>();
         serviceCollection.AddSingleton<MainWindowViewModel>();
         serviceCollection.AddTransient<ChatViewModel>();
         serviceCollection.AddTransient<MemoryGraphViewModel>();

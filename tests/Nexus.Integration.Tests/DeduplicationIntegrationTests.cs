@@ -90,7 +90,11 @@ public class DeduplicationIntegrationTests : IAsyncLifetime, IDisposable
         Assert.Equal(2, entitiesBefore.Count);
 
         // Create AgentService with EntityResolver
+        // AC-H1: disable Phase 9 defaults — dedup test uses ChatAsync with a fake LLM and no
+        // tool calls; disabling is precautionary to guard against future tool injection paths.
         var config = new NexusConfig();
+        config.Mcp.PlannerContextEnabled = false;
+        config.Mcp.ToolVerificationEnabled = false;
         var search = new SemanticSearch(_connectionString);
         var memoryBuilder = new MemoryContextBuilder(_graph, search);
         var promptBuilder = new PromptBuilder(memoryBuilder, config.Agent);
@@ -129,7 +133,10 @@ public class DeduplicationIntegrationTests : IAsyncLifetime, IDisposable
         // Arrange: Create AgentService with a resolver whose graph will cause issues
         // We use a valid graph but create a scenario where FindAndMergeAsync works
         // but even if it threw, the ChatAsync should still complete
+        // AC-H1: disable Phase 9 defaults — precautionary guard matching sibling dedup tests.
         var config = new NexusConfig();
+        config.Mcp.PlannerContextEnabled = false;
+        config.Mcp.ToolVerificationEnabled = false;
         var search = new SemanticSearch(_connectionString);
         var memoryBuilder = new MemoryContextBuilder(_graph, search);
         var promptBuilder = new PromptBuilder(memoryBuilder, config.Agent);
@@ -207,6 +214,8 @@ public class DeduplicationIntegrationTests : IAsyncLifetime, IDisposable
     public void DeduplicationThreshold_DefaultValue_Is085()
     {
         // Arrange
+        // AC-H1: verified compatible with Phase 9 defaults-ON — only reads a config value,
+        // no AgentService, tool loop, or plan path involved.
         var config = new NexusConfig();
 
         // Act & Assert: Config regression — default threshold must be 0.85

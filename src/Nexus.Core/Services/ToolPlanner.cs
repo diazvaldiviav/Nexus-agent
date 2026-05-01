@@ -4,6 +4,7 @@ using Nexus.Core.Abstractions;
 using Nexus.Core.Config;
 using Nexus.Core.Models;
 using Nexus.Core.Providers;
+using Nexus.Memory.Abstractions;
 
 namespace Nexus.Core.Services;
 
@@ -57,17 +58,37 @@ public sealed class ToolPlanner : IToolPlanner
     private const float TokenOverlapThreshold = 0.7f;
 
     /// <summary>
-    /// Planning prompt template.  Placeholders: {toolDefinitionsForPrompt}, {userMessage}.
+    /// Planning prompt template.
+    /// Placeholders: {toolDefinitionsForPrompt}, {context}, {userMessage}.
+    /// When {context} is substituted with an empty string the resulting prompt is
+    /// byte-identical to the Phase 8 baseline (no extra whitespace is introduced).
     /// </summary>
     private const string PlanningPromptTemplate = """
         You are a task planner. You have these tools available:
         {toolDefinitionsForPrompt}
 
-        Create a step-by-step plan to complete this task. Each step must use exactly one tool.
-        Format each step as: Step N: description of what to do with tool_name
-        You MUST output between 1 and 5 steps. Be specific about which tool to use.
+        Create a step-by-step plan to complete this task.
 
-        Task: {userMessage}
+        FORMATTING RULE — every step MUST follow this exact pattern:
+            Step N: Use `tool_name` to <do something specific>
+
+        The tool name MUST be one of the tools listed above, wrapped in backticks.
+        Do NOT use natural-language verbs like "Insert", "Save", "Add", "Modify",
+        "Update", or "Edit" without explicitly naming the tool. Every step is one
+        tool call.
+
+        GOOD examples:
+          Step 1: Use `read_text_file` to retrieve the current content of config.yaml
+          Step 2: Use `write_file` to save the modified content back to config.yaml
+
+        BAD examples (DO NOT WRITE — these will be rejected):
+          Step 1: Read the file                  ← missing tool name
+          Step 2: Insert the new section         ← natural verb, no tool
+          Step 3: Save the changes               ← natural verb, no tool
+
+        Output between 1 and 5 steps. Each step is exactly one tool invocation.
+
+        {context}Task: {userMessage}
         """;
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -95,6 +116,14 @@ public sealed class ToolPlanner : IToolPlanner
     private readonly LlmProviderFactory _providerFactory;
     private readonly NexusConfig _config;
     private readonly ILogger<ToolPlanner>? _logger;
+    private readonly IEmbeddingService? _embeddings;
+
+    // Lazy cache of tool embeddings keyed by tool name. Populated once per planner
+    // instance under _cacheLock; reads after the warm-up are lock-free since each
+    // entry is an immutable float[].
+    private readonly Dictionary<string, float[]> _toolEmbeddingCache =
+        new(StringComparer.Ordinal);
+    private readonly SemaphoreSlim _cacheLock = new(1, 1);
 
     // ──────────────────────────────────────────────────────────────────────────
     // Constructor
@@ -106,14 +135,22 @@ public sealed class ToolPlanner : IToolPlanner
     /// <param name="providerFactory">Factory used to resolve the local LLM provider.</param>
     /// <param name="config">Application configuration (reads <c>Models.Local</c> and <c>Mcp.ToolPlanningEnabled</c>).</param>
     /// <param name="logger">Optional structured logger; <see langword="null"/> is safe.</param>
+    /// <param name="embeddingService">
+    /// Optional embedding service used as a Tier-4 semantic fallback when the lexical
+    /// 3-tier matcher returns <see langword="null"/>. Gated by
+    /// <c>McpConfig.ToolPlannerEmbeddingFallbackEnabled</c>. When the service is absent
+    /// or the gate is off, behaviour is byte-equivalent to the lexical-only matcher.
+    /// </param>
     public ToolPlanner(
         LlmProviderFactory providerFactory,
         NexusConfig config,
-        ILogger<ToolPlanner>? logger = null)
+        ILogger<ToolPlanner>? logger = null,
+        IEmbeddingService? embeddingService = null)
     {
         _providerFactory = providerFactory ?? throw new ArgumentNullException(nameof(providerFactory));
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _logger = logger;
+        _embeddings = embeddingService;
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -121,36 +158,78 @@ public sealed class ToolPlanner : IToolPlanner
     // ──────────────────────────────────────────────────────────────────────────
 
     /// <inheritdoc/>
+    public Task<ToolPlan?> GeneratePlanAsync(
+        string userMessage,
+        string toolDefinitionsForPrompt,
+        CancellationToken ct = default)
+        => GeneratePlanAsync(userMessage, toolDefinitionsForPrompt, context: null, ct);
+
+    /// <inheritdoc/>
     /// <remarks>
     /// <para>
-    /// Cancellation propagates unconditionally: if <paramref name="ct"/> is cancelled at any
-    /// await point, <see cref="OperationCanceledException"/> is re-thrown to the caller.
+    /// Cancellation propagates unconditionally: if <paramref name="cancellationToken"/> is
+    /// cancelled at any await point, <see cref="OperationCanceledException"/> is re-thrown.
     /// </para>
     /// <para>
     /// LLM call timeout is handled internally via a linked <see cref="CancellationTokenSource"/>
     /// seeded with <c>McpConfig.ToolPlanningTimeoutSeconds</c>.  When the deadline fires,
     /// the timeout OCE is caught here and the method returns <see langword="null"/> — the
-    /// caller's <paramref name="ct"/> is never cancelled.
+    /// caller's <paramref name="cancellationToken"/> is never cancelled.
+    /// </para>
+    /// <para>
+    /// When <paramref name="context"/> is <see langword="null"/> or
+    /// <see cref="PlannerContext.IsEmpty"/> the generated prompt is byte-identical to the
+    /// Phase 8 baseline because <see cref="PlannerContext.ToPromptBlock"/> returns an empty
+    /// string and the <c>{context}</c> placeholder is substituted with <c>""</c>.
     /// </para>
     /// </remarks>
     public async Task<ToolPlan?> GeneratePlanAsync(
         string userMessage,
         string toolDefinitionsForPrompt,
-        CancellationToken ct = default)
+        PlannerContext? context,
+        CancellationToken cancellationToken = default)
     {
+        // [DIAG-P9] entry log
+        _logger?.LogInformation(
+            "[DIAG-P9] GeneratePlanAsync ENTRY enabled={Enabled} toolDefsLen={Len} contextNull={Ctx} contextEmpty={Empty} userMsgLen={UMsg}",
+            _config.Mcp.ToolPlanningEnabled,
+            toolDefinitionsForPrompt?.Length ?? 0,
+            context is null,
+            context?.IsEmpty ?? true,
+            userMessage?.Length ?? 0);
+
         // Gate 1: feature disabled
         if (!_config.Mcp.ToolPlanningEnabled)
+        {
+            _logger?.LogInformation("[DIAG-P9] EXIT-NULL gate1 ToolPlanningEnabled=false");
             return null;
+        }
 
         // Gate 2: no tools to plan with
         if (string.IsNullOrWhiteSpace(toolDefinitionsForPrompt))
+        {
+            _logger?.LogInformation("[DIAG-P9] EXIT-NULL gate2 empty toolDefinitionsForPrompt");
             return null;
+        }
+
+        // [DIAG-P9] log context summary if present
+        if (context is not null && !context.IsEmpty)
+        {
+            _logger?.LogInformation(
+                "[DIAG-P9] context Summary='{Summary}' RecentTurnsCount={Count} TotalBytes={Bytes}",
+                context.Summary, context.RecentTurns.Count, context.TotalBytes);
+        }
+
+        // Alias for readability inside the existing body
+        var ct = cancellationToken;
 
         try
         {
-            // 1. Build planning prompt
+            // 1. Build planning prompt (context block is "" when null/empty — byte-identical baseline)
+            var contextBlock = context?.ToPromptBlock() ?? string.Empty;
             var prompt = PlanningPromptTemplate
                 .Replace("{toolDefinitionsForPrompt}", toolDefinitionsForPrompt)
+                .Replace("{context}", contextBlock)
                 .Replace("{userMessage}", userMessage);
 
             // 2. Resolve local LLM provider and call it
@@ -188,26 +267,62 @@ public sealed class ToolPlanner : IToolPlanner
             // AC-C3: checkpoint between the LLM response and the parsing phase
             ct.ThrowIfCancellationRequested();
 
+            // [DIAG-P9] log raw plan from LLM (truncated)
+            var rawPreview = rawPlan.Length > 500 ? rawPlan.Substring(0, 500) + "...[truncated]" : rawPlan;
+            _logger?.LogInformation(
+                "[DIAG-P9] raw LLM plan ({Len} chars):\n----RAW----\n{Preview}\n----END----",
+                rawPlan.Length, rawPreview);
+
             // 3. Parse steps from LLM output (capped at MaxSteps)
             var rawSteps = ParseSteps(rawPlan);
             if (rawSteps.Count == 0)
             {
-                _logger?.LogInformation(
-                    "ToolPlanner: no steps parsed from LLM output ({Len} chars)", rawPlan.Length);
+                _logger?.LogWarning(
+                    "[DIAG-P9] EXIT-NULL gate-parse no steps parsed from LLM output ({Len} chars). FULL OUTPUT:\n{Full}",
+                    rawPlan.Length, rawPlan);
                 return null;
             }
 
             // 4. Extract tool names + descriptions from the prompt-formatted string
             var tools = ExtractTools(toolDefinitionsForPrompt);
+            _logger?.LogInformation(
+                "[DIAG-P9] parsed {Steps} step(s); extracted {Tools} tool(s) from defs",
+                rawSteps.Count, tools.Count);
 
-            // 5. Match each step to a tool via deterministic fuzzy cascade
+            // 5. Match each step to a tool via deterministic fuzzy cascade,
+            //    then (when configured) fall through to embedding-based semantic match.
             var matchedSteps = new List<ToolPlanStep>(rawSteps.Count);
+            var embeddingFallbackEnabled =
+                _embeddings is not null
+                && _config.Mcp.ToolPlannerEmbeddingFallbackEnabled;
+
             foreach (var step in rawSteps)
             {
                 // AC-C3: cancellation checkpoint at the top of each step iteration
                 ct.ThrowIfCancellationRequested();
-                matchedSteps.Add(MatchStepFuzzy(step, tools));
+                var matched = MatchStepFuzzy(step, tools);
+
+                // Layer 2 (Sprint 10 follow-up): semantic fallback when lexical fails.
+                // Only fires when the lexical matcher returned null AND the service is
+                // available AND the gate is on — otherwise behaviour is byte-equivalent.
+                if (matched.MatchedToolName is null && embeddingFallbackEnabled)
+                {
+                    matched = await MatchStepWithEmbeddingsAsync(step, tools, ct).ConfigureAwait(false);
+                }
+
+                _logger?.LogInformation(
+                    "[DIAG-P9] step {N} desc='{Desc}' → matched={Match} similarity={Sim:F2}",
+                    matched.StepNumber,
+                    matched.Description.Length > 80 ? matched.Description.Substring(0, 80) + "…" : matched.Description,
+                    matched.MatchedToolName ?? "<NULL>",
+                    matched.Similarity);
+                matchedSteps.Add(matched);
             }
+
+            var unmatched = matchedSteps.Count(s => s.MatchedToolName is null);
+            _logger?.LogInformation(
+                "[DIAG-P9] PLAN OK: total={Total} matched={Matched} unmatched={Unmatched}",
+                matchedSteps.Count, matchedSteps.Count - unmatched, unmatched);
 
             return new ToolPlan(matchedSteps, rawPlan);
         }
@@ -358,4 +473,145 @@ public sealed class ToolPlanner : IToolPlanner
 
     private static IEnumerable<string> Tokenize(string s) =>
         s.Split(TokenSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Layer 2 (Sprint 10 follow-up): Semantic / embedding-based fallback matcher.
+    // Runs ONLY when MatchStepFuzzy returns null AND the embedding service is
+    // available AND the gate is enabled. The lexical 3-tier matcher remains the
+    // happy path (zero added cost when the LLM names the tool literally).
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Computes the embedding of <paramref name="step"/>'s description and matches it
+    /// against the cached tool embeddings. Returns the step with
+    /// <see cref="ToolPlanStep.MatchedToolName"/> set when the best cosine similarity
+    /// reaches <c>McpConfig.ToolPlannerEmbeddingMatchThreshold</c>; otherwise returns
+    /// the step unchanged.
+    /// </summary>
+    /// <remarks>
+    /// Cancellation propagates as <see cref="OperationCanceledException"/>. Any other
+    /// exception is logged at Warning level and degrades gracefully to "no match".
+    /// </remarks>
+    private async Task<ToolPlanStep> MatchStepWithEmbeddingsAsync(
+        ToolPlanStep step,
+        IReadOnlyList<(string Name, string FullLine)> tools,
+        CancellationToken ct)
+    {
+        try
+        {
+            // Step embedding — single call per ambiguous step.
+            var stepVec = await _embeddings!
+                .GenerateEmbeddingAsync(step.Description, ct)
+                .ConfigureAwait(false);
+            if (stepVec is null || stepVec.Length == 0)
+                return step;
+
+            // Tool embeddings — populated lazily on first use, cached for the lifetime
+            // of this ToolPlanner instance (tools don't change in a session).
+            await EnsureToolEmbeddingsAsync(tools, ct).ConfigureAwait(false);
+
+            var threshold = _config.Mcp.ToolPlannerEmbeddingMatchThreshold;
+            string? bestName = null;
+            float bestSim = 0f;
+
+            foreach (var (name, _) in tools)
+            {
+                if (!_toolEmbeddingCache.TryGetValue(name, out var toolVec))
+                    continue;
+
+                var sim = CosineSimilarity(stepVec, toolVec);
+                if (sim >= threshold && sim > bestSim)
+                {
+                    bestSim = sim;
+                    bestName = name;
+                }
+            }
+
+            if (bestName is not null)
+            {
+                _logger?.LogInformation(
+                    "[DIAG-P9] embedding fallback matched step {N} → {Tool} (sim={Sim:F2}, threshold={Thr:F2})",
+                    step.StepNumber, bestName, bestSim, threshold);
+                return step with { MatchedToolName = bestName, Similarity = bestSim };
+            }
+
+            return step;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(
+                ex,
+                "[DIAG-P9] embedding fallback failed for step {N}; degrading to no-match",
+                step.StepNumber);
+            return step;
+        }
+    }
+
+    /// <summary>
+    /// Populates <see cref="_toolEmbeddingCache"/> with embeddings for every tool whose
+    /// name is not yet cached. Guarded by <see cref="_cacheLock"/>; idempotent — safe
+    /// to call from concurrent plan invocations.
+    /// </summary>
+    private async Task EnsureToolEmbeddingsAsync(
+        IReadOnlyList<(string Name, string FullLine)> tools,
+        CancellationToken ct)
+    {
+        // Fast path: all tools already cached.
+        var allCached = true;
+        foreach (var (name, _) in tools)
+        {
+            if (!_toolEmbeddingCache.ContainsKey(name))
+            {
+                allCached = false;
+                break;
+            }
+        }
+        if (allCached) return;
+
+        await _cacheLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            foreach (var (name, fullLine) in tools)
+            {
+                if (_toolEmbeddingCache.ContainsKey(name)) continue;
+
+                ct.ThrowIfCancellationRequested();
+                var vec = await _embeddings!
+                    .GenerateEmbeddingAsync(fullLine, ct)
+                    .ConfigureAwait(false);
+                if (vec is not null && vec.Length > 0)
+                    _toolEmbeddingCache[name] = vec;
+            }
+        }
+        finally
+        {
+            _cacheLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Cosine similarity in [0, 1] between two vectors of equal length. Returns 0
+    /// when either vector is zero-norm or lengths differ. Local copy of the helper
+    /// in <c>Nexus.Memory.Graph.SemanticSearch</c> (avoids cross-layer cycle).
+    /// </summary>
+    private static float CosineSimilarity(float[] a, float[] b)
+    {
+        if (a.Length != b.Length || a.Length == 0)
+            return 0f;
+
+        float dot = 0f, normA = 0f, normB = 0f;
+        for (int i = 0; i < a.Length; i++)
+        {
+            dot += a[i] * b[i];
+            normA += a[i] * a[i];
+            normB += b[i] * b[i];
+        }
+        if (normA == 0f || normB == 0f)
+            return 0f;
+        return dot / (float)(Math.Sqrt(normA) * Math.Sqrt(normB));
+    }
 }

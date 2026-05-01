@@ -4,6 +4,7 @@ using Nexus.Core.Config;
 using Nexus.Core.Models;
 using Nexus.Core.Providers;
 using Nexus.Core.Services;
+using Nexus.Memory.Abstractions;
 
 namespace Nexus.Core.Tests;
 
@@ -536,5 +537,332 @@ public class ToolPlannerTests
         Assert.Equal(1.0f, result.Steps[1].Similarity);
 
         Assert.Equal(llmResponse, result.RawPlanText);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Helpers for prompt-capture tests (AC-3 backward compat + context injection)
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// LLM provider that records every prompt sent to it.
+    /// The prompt is the Content of the first (and only) history entry the planner builds.
+    /// </summary>
+    private sealed class CapturingLlmProvider : ILlmProvider
+    {
+        public string ProviderName { get; }
+
+        /// <summary>The full prompt string from the most recent ChatAsync call.</summary>
+        public string? LastPrompt { get; private set; }
+
+        /// <summary>Fixed response returned for every call.</summary>
+        public string NextResponse { get; set; } = "1. Use read_text_file to read it";
+
+        public CapturingLlmProvider(string providerName = "ollama")
+        {
+            ProviderName = providerName;
+        }
+
+        public Task<string> ChatAsync(
+            string systemPrompt,
+            IReadOnlyList<ConversationMessage> conversationHistory,
+            string model,
+            CancellationToken cancellationToken = default)
+        {
+            // ToolPlanner always builds a single-user-message history where [0].Content is the prompt.
+            LastPrompt = conversationHistory.FirstOrDefault()?.Content;
+            return Task.FromResult(NextResponse);
+        }
+
+        public IAsyncEnumerable<string> ChatStreamAsync(
+            string systemPrompt,
+            IReadOnlyList<ConversationMessage> conversationHistory,
+            string model,
+            CancellationToken cancellationToken = default)
+            => throw new NotImplementedException("Not used in ToolPlanner tests.");
+    }
+
+    private static (ToolPlanner planner, CapturingLlmProvider capturingProvider) CreateCapturingPlanner()
+    {
+        var config = new NexusConfig();
+        config.Mcp.ToolPlanningEnabled = true;
+        config.Models.Local.Provider = "ollama";
+        config.Models.Local.Model = "test-model";
+        config.Mcp.ToolPlanningTimeoutSeconds = 30;
+
+        var capturingProvider = new CapturingLlmProvider("ollama");
+        var factory = new LlmProviderFactory(new ILlmProvider[] { capturingProvider });
+        var planner = new ToolPlanner(factory, config);
+        return (planner, capturingProvider);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Test 15: GeneratePlanAsync_WithNullContext_ProducesIdenticalPromptToPhase8
+    //          AC-3 backward compatibility guarantee
+    // ──────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task GeneratePlanAsync_WithNullContext_ProducesIdenticalPromptToPhase8()
+    {
+        // Arrange
+        var (planner, capturingProvider) = CreateCapturingPlanner();
+        const string toolDefs = TwoToolDefs;
+        const string userMsg = "read my file";
+
+        // Compute the Phase 8 baseline prompt independently:
+        // Phase 8 template (before the {context} placeholder was added) was:
+        //   "... {context}Task: {userMessage} ..."
+        // When {context} is "" that is byte-identical to the current template with no context.
+        // We simulate by calling the 3-arg overload (forwards to 4-arg with context=null).
+        _ = await planner.GeneratePlanAsync(userMsg, toolDefs);
+        var baseline3ArgPrompt = capturingProvider.LastPrompt;
+        Assert.NotNull(baseline3ArgPrompt);
+
+        // Also call the 4-arg overload explicitly with null context
+        _ = await planner.GeneratePlanAsync(userMsg, toolDefs, context: null);
+        var nullContextPrompt = capturingProvider.LastPrompt;
+        Assert.NotNull(nullContextPrompt);
+
+        // Also call the 4-arg overload with PlannerContext.Empty
+        _ = await planner.GeneratePlanAsync(userMsg, toolDefs, PlannerContext.Empty);
+        var emptyContextPrompt = capturingProvider.LastPrompt;
+        Assert.NotNull(emptyContextPrompt);
+
+        // All three calls must produce byte-identical prompts
+        Assert.Equal(baseline3ArgPrompt, nullContextPrompt);
+        Assert.Equal(baseline3ArgPrompt, emptyContextPrompt);
+
+        // The prompt must NOT contain the context section header
+        Assert.DoesNotContain("## Conversation Context", baseline3ArgPrompt);
+
+        // The prompt must still contain the task section
+        Assert.Contains($"Task: {userMsg}", baseline3ArgPrompt);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Test 16: GeneratePlanAsync_WithContext_PromptIncludesContextBlock
+    //          AC-3 context injection
+    // ──────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task GeneratePlanAsync_WithContext_PromptIncludesContextBlock()
+    {
+        // Arrange: build a non-empty PlannerContext
+        var context = new PlannerContext(
+            Summary: "User is editing a config file at D:\\project\\nexus.yaml",
+            RecentTurns: new[] { "user: Check D:\\project\\nexus.yaml", "assistant: File opened." },
+            TotalBytes: 80);
+
+        var (planner, capturingProvider) = CreateCapturingPlanner();
+        const string toolDefs = TwoToolDefs;
+        const string userMsg = "read my file";
+
+        // Act
+        _ = await planner.GeneratePlanAsync(userMsg, toolDefs, context);
+        var capturedPrompt = capturingProvider.LastPrompt;
+        Assert.NotNull(capturedPrompt);
+
+        // Assert: context block headers are present
+        Assert.Contains("## Conversation Context", capturedPrompt);
+
+        // The Summary is injected
+        Assert.Contains("D:\\project\\nexus.yaml", capturedPrompt);
+
+        // Recent turns section is present
+        Assert.Contains("Recent turns:", capturedPrompt);
+
+        // Individual turns are listed
+        Assert.Contains("user: Check D:\\project\\nexus.yaml", capturedPrompt);
+        Assert.Contains("assistant: File opened.", capturedPrompt);
+
+        // The task section still follows the context block
+        Assert.Contains($"Task: {userMsg}", capturedPrompt);
+
+        // Context block precedes the task line
+        var contextHeaderPos = capturedPrompt.IndexOf("## Conversation Context", StringComparison.Ordinal);
+        var taskPos = capturedPrompt.IndexOf($"Task: {userMsg}", StringComparison.Ordinal);
+        Assert.True(contextHeaderPos < taskPos,
+            "Context block must appear before 'Task:' line in the prompt");
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Layer 2 (Sprint 10 follow-up) — Embedding fallback tests
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Hand-rolled IEmbeddingService that returns deterministic per-text vectors,
+    /// optionally throws on demand, and tracks call counts.
+    /// </summary>
+    private sealed class FakeEmbeddingService : Nexus.Memory.Abstractions.IEmbeddingService
+    {
+        // Pre-loaded embeddings keyed by exact input text. Tests fill this with
+        // hand-tuned vectors so cosine-similarity outcomes are reproducible.
+        public Dictionary<string, float[]> Vectors { get; } = new(StringComparer.Ordinal);
+
+        public bool ShouldThrow { get; set; }
+        public int CallCount { get; private set; }
+
+        public Task<float[]> GenerateEmbeddingAsync(string text, CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            if (ShouldThrow)
+                throw new InvalidOperationException("simulated embedding failure");
+            if (Vectors.TryGetValue(text, out var vec))
+                return Task.FromResult(vec);
+            // Default: zero vector so cosine sim = 0 → no match.
+            return Task.FromResult(new float[8]);
+        }
+    }
+
+    private static (ToolPlanner planner, FakeLlmProvider fakeProvider, FakeEmbeddingService embeddings)
+        CreatePlannerWithEmbeddings(
+            string nextResponse,
+            bool fallbackEnabled = true,
+            float threshold = 0.65f,
+            IEmbeddingService? overrideEmbeddings = null)
+    {
+        var config = new NexusConfig();
+        config.Mcp.ToolPlanningEnabled = true;
+        config.Models.Local.Provider = "ollama";
+        config.Models.Local.Model = "test-model";
+        config.Mcp.ToolPlanningTimeoutSeconds = 30;
+        config.Mcp.ToolPlannerEmbeddingFallbackEnabled = fallbackEnabled;
+        config.Mcp.ToolPlannerEmbeddingMatchThreshold = threshold;
+
+        var fakeProvider = new FakeLlmProvider("ollama") { NextResponse = nextResponse };
+        var factory = new LlmProviderFactory(new ILlmProvider[] { fakeProvider });
+
+        var embeddings = new FakeEmbeddingService();
+        var planner = new ToolPlanner(
+            factory, config, logger: null,
+            embeddingService: overrideEmbeddings ?? embeddings);
+        return (planner, fakeProvider, embeddings);
+    }
+
+    private const string EmbedTwoToolDefs =
+        "- read_text_file: Reads a text file from disk\n" +
+        "- write_file: Writes or overwrites file content";
+
+    /// <summary>
+    /// Layer 2 — Test A: lexical Tier 1-3 fail (no tool name + no token overlap),
+    /// embedding sim ≥ threshold → matched via fallback.
+    /// </summary>
+    [Fact]
+    public async Task EmbeddingFallback_LexicalNullButEmbeddingMatches_UsesFallback()
+    {
+        // Arrange — LLM uses "Save" with no tool name → lexical Tier 1-3 all miss
+        var llmPlan = "Step 1: Save the modified content back to the file";
+        var (planner, _, embeddings) = CreatePlannerWithEmbeddings(llmPlan);
+
+        // Tune embeddings: step description close to write_file, far from read_text_file
+        embeddings.Vectors["Save the modified content back to the file"] = new[] { 1f, 0.9f, 0f };
+        embeddings.Vectors["read_text_file: Reads a text file from disk"] = new[] { 0.1f, 0f, 1f };
+        embeddings.Vectors["write_file: Writes or overwrites file content"] = new[] { 0.95f, 1f, 0f };
+
+        // Act
+        var plan = await planner.GeneratePlanAsync("modify the file", EmbedTwoToolDefs);
+
+        // Assert
+        Assert.NotNull(plan);
+        Assert.Single(plan!.Steps);
+        Assert.Equal("write_file", plan.Steps[0].MatchedToolName);
+        Assert.True(plan.Steps[0].Similarity >= 0.65f,
+            $"Expected similarity ≥ 0.65, got {plan.Steps[0].Similarity}");
+    }
+
+    /// <summary>
+    /// Layer 2 — Test B: lexical fails, embedding similarity below threshold → no match.
+    /// </summary>
+    [Fact]
+    public async Task EmbeddingFallback_BelowThreshold_ReturnsNull()
+    {
+        var llmPlan = "Step 1: Do something abstract that no tool fits";
+        var (planner, _, embeddings) = CreatePlannerWithEmbeddings(llmPlan, threshold: 0.65f);
+
+        // Step vector is roughly orthogonal to both tools → cosine ~0 < 0.65
+        embeddings.Vectors["Do something abstract that no tool fits"] = new[] { 0f, 0f, 1f };
+        embeddings.Vectors["read_text_file: Reads a text file from disk"] = new[] { 1f, 0f, 0f };
+        embeddings.Vectors["write_file: Writes or overwrites file content"] = new[] { 0f, 1f, 0f };
+
+        var plan = await planner.GeneratePlanAsync("do abstract", EmbedTwoToolDefs);
+
+        Assert.NotNull(plan);
+        Assert.Single(plan!.Steps);
+        Assert.Null(plan.Steps[0].MatchedToolName);
+    }
+
+    /// <summary>
+    /// Layer 2 — Test C: IEmbeddingService is null → no fallback attempted; behaviour
+    /// byte-equivalent to lexical-only (matched stays null when Tier 1-3 fails).
+    /// </summary>
+    [Fact]
+    public async Task EmbeddingFallback_NullEmbeddingService_FallsBackToCurrentBehavior()
+    {
+        var llmPlan = "Step 1: Insert a section here";   // no tool name → lexical fails
+        var config = new NexusConfig();
+        config.Mcp.ToolPlanningEnabled = true;
+        config.Models.Local.Provider = "ollama";
+        config.Models.Local.Model = "test-model";
+        config.Mcp.ToolPlannerEmbeddingFallbackEnabled = true;   // gate ON but service NULL
+
+        var fakeProvider = new FakeLlmProvider("ollama") { NextResponse = llmPlan };
+        var factory = new LlmProviderFactory(new ILlmProvider[] { fakeProvider });
+        var planner = new ToolPlanner(factory, config, logger: null, embeddingService: null);
+
+        var plan = await planner.GeneratePlanAsync("insert", EmbedTwoToolDefs);
+
+        Assert.NotNull(plan);
+        Assert.Single(plan!.Steps);
+        Assert.Null(plan.Steps[0].MatchedToolName);
+    }
+
+    /// <summary>
+    /// Layer 2 — Test D: gate disabled → fallback is skipped even when service available.
+    /// </summary>
+    [Fact]
+    public async Task EmbeddingFallback_Disabled_SkipsEvenWhenServiceAvailable()
+    {
+        var llmPlan = "Step 1: Save it";
+        var (planner, _, embeddings) = CreatePlannerWithEmbeddings(llmPlan, fallbackEnabled: false);
+
+        // Even if vectors would have matched, gate=off prevents the call entirely.
+        embeddings.Vectors["Save it"] = new[] { 1f, 0f, 0f };
+        embeddings.Vectors["read_text_file: Reads a text file from disk"] = new[] { 0f, 1f, 0f };
+        embeddings.Vectors["write_file: Writes or overwrites file content"] = new[] { 1f, 0f, 0f };
+
+        var plan = await planner.GeneratePlanAsync("save", EmbedTwoToolDefs);
+
+        Assert.NotNull(plan);
+        Assert.Single(plan!.Steps);
+        Assert.Null(plan.Steps[0].MatchedToolName);
+        Assert.Equal(0, embeddings.CallCount);  // service never invoked
+    }
+
+    /// <summary>
+    /// Layer 2 — Test E: embedding service throws → graceful degradation
+    /// (returns step unchanged, logs Warning).
+    /// </summary>
+    [Fact]
+    public async Task EmbeddingFallback_ServiceThrows_ReturnsNullAndLogsWarning()
+    {
+        var llmPlan = "Step 1: Insert a row";
+        var config = new NexusConfig();
+        config.Mcp.ToolPlanningEnabled = true;
+        config.Models.Local.Provider = "ollama";
+        config.Models.Local.Model = "test-model";
+        config.Mcp.ToolPlannerEmbeddingFallbackEnabled = true;
+
+        var fakeProvider = new FakeLlmProvider("ollama") { NextResponse = llmPlan };
+        var factory = new LlmProviderFactory(new ILlmProvider[] { fakeProvider });
+        var embeddings = new FakeEmbeddingService { ShouldThrow = true };
+        var capturingLogger = new CapturingLogger<ToolPlanner>();
+        var planner = new ToolPlanner(factory, config, capturingLogger, embeddings);
+
+        var plan = await planner.GeneratePlanAsync("insert", EmbedTwoToolDefs);
+
+        Assert.NotNull(plan);
+        Assert.Single(plan!.Steps);
+        Assert.Null(plan.Steps[0].MatchedToolName);
+        Assert.True(capturingLogger.HasWarning("embedding fallback failed"),
+            "Expected Warning log mentioning 'embedding fallback failed'");
     }
 }

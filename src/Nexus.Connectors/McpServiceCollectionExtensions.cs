@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Nexus.Connectors.Catalog;
 using Nexus.Connectors.ToolFiltering;
 using Nexus.Core.Abstractions;
 using Nexus.Core.Config;
@@ -44,6 +45,19 @@ public static class McpServiceCollectionExtensions
                 sp.GetRequiredService<NexusConfig>(),
                 sp.GetRequiredService<ToolRegistry>(),
                 sp.GetService<ILogger<PathValidator>>()));
+
+        // IVerificationCatalog must be registered BEFORE IToolVerifier (verifier depends on catalog).
+        services.AddSingleton<IVerificationCatalog>(sp =>
+            new VerificationCatalog(
+                sp.GetRequiredService<NexusConfig>(),
+                sp.GetService<ILogger<VerificationCatalog>>()));
+
+        services.AddSingleton<IToolVerifier>(sp =>
+            new McpToolVerifier(
+                sp.GetRequiredService<IVerificationCatalog>(),
+                sp.GetRequiredService<IMcpClientManager>(),
+                sp.GetRequiredService<NexusConfig>(),
+                sp.GetService<ILogger<McpToolVerifier>>()));
 
         services.AddSingleton<ISchemaValidator>(sp =>
             new SchemaValidator(

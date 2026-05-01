@@ -21,6 +21,10 @@ public class AgentService : IAgentService
     private readonly LlmProviderFactory _providerFactory;
     private readonly IInteractionSummarizer _summarizer;
     private readonly IToolPlanner? _toolPlanner;
+    private readonly IPlannerContextBuilder? _plannerContextBuilder;
+    private readonly IToolVerifier? _toolVerifier;
+    private readonly IPermissionGate? _permissionGate;
+    private readonly IVerificationCatalog? _verificationCatalog;
     private readonly IToolExecutor? _toolExecutor;
     private readonly IToolArgumentValidator? _argumentValidator;
     private readonly ISchemaValidator? _schemaValidator;
@@ -39,6 +43,121 @@ public class AgentService : IAgentService
     private const int PlanTrailExtractionWindow = 3;
     private const int PlanTrailHeaderSize = 4;
 
+    private static string BuildStepPrompt(int attempt, ToolPlanStep step, JsonElement? schema)
+    {
+        var tool = step.MatchedToolName!;  // caller guards null
+
+        if (attempt == 1)
+            return $"[PLANNER] Execute ONLY this step: use {tool} to {step.Description}. " +
+                   $"Call the tool now with [TOOL_CALL: ...]";
+
+        if (attempt == 2)
+        {
+            if (schema is null)
+            {
+                // Fall back to attempt-1 body
+                return $"[PLANNER] Execute ONLY this step: use {tool} to {step.Description}. " +
+                       $"Call the tool now with [TOOL_CALL: ...]";
+            }
+
+            var requiredText = DescribeRequired(schema.Value);
+            var argsTemplate = BuildArgsTemplate(schema.Value);
+
+            return
+                $"[PLANNER] Execute step {step.StepNumber} using the `{tool}` tool.\n\n" +
+                $"{step.Description}\n\n" +
+                $"Required arguments: {requiredText}\n\n" +
+                $"Respond with EXACTLY this line (fill in <placeholders>, no other text):\n" +
+                $"[TOOL_CALL: {{\"name\": \"{tool}\", \"arguments\": {argsTemplate}}}]";
+        }
+
+        // attempt >= 3: hard coercion (verbatim from AC-4)
+        return
+            "[PLANNER] Your previous response was prose. This is wrong.\n\n" +
+            "Output ONLY the tool call line. No prose. No explanations. No markdown. Just:\n" +
+            $"[TOOL_CALL: {{\"name\": \"{tool}\", \"arguments\": {{...}}}}]";
+    }
+
+    /// <summary>
+    /// Emits a comma-separated list like "path (string), offset (integer)" derived from
+    /// the schema's required[] array crossed with properties[name].type. Returns "(none)"
+    /// if schema lacks required or properties, or if required is empty.
+    /// </summary>
+    private static string DescribeRequired(JsonElement schema)
+    {
+        if (schema.ValueKind != JsonValueKind.Object) return "(none)";
+
+        if (!schema.TryGetProperty("required", out var req) || req.ValueKind != JsonValueKind.Array)
+            return "(none)";
+
+        schema.TryGetProperty("properties", out var props);
+        var hasProps = props.ValueKind == JsonValueKind.Object;
+
+        var parts = new List<string>();
+        foreach (var name in req.EnumerateArray())
+        {
+            var paramName = name.GetString();
+            if (string.IsNullOrEmpty(paramName)) continue;
+
+            string typeName = "any";
+            if (hasProps && props.TryGetProperty(paramName, out var propDef)
+                && propDef.ValueKind == JsonValueKind.Object
+                && propDef.TryGetProperty("type", out var t)
+                && t.ValueKind == JsonValueKind.String)
+            {
+                typeName = t.GetString() ?? "any";
+            }
+            parts.Add($"{paramName} ({typeName})");
+        }
+
+        return parts.Count == 0 ? "(none)" : string.Join(", ", parts);
+    }
+
+    /// <summary>
+    /// Builds a concrete arguments template from a tool's input schema.
+    /// Behavior contract:
+    /// - schema null → not called (caller falls back to attempt-1 prompt body).
+    /// - root not <see cref="JsonValueKind.Object"/> → returns "{...}".
+    /// - "required" missing or not <see cref="JsonValueKind.Array"/> → returns "{...}".
+    /// - empty "required" array → returns "{...}".
+    /// - non-empty "required" → emits {"name1": "&lt;name1&gt;", "name2": &lt;name2&gt;}
+    ///   where string-typed fields are quoted placeholders and other types are unquoted.
+    /// </summary>
+    private static string BuildArgsTemplate(JsonElement schema)
+    {
+        if (schema.ValueKind != JsonValueKind.Object) return "{...}";
+        if (!schema.TryGetProperty("required", out var req) || req.ValueKind != JsonValueKind.Array)
+            return "{...}";
+
+        schema.TryGetProperty("properties", out var props);
+        var hasProps = props.ValueKind == JsonValueKind.Object;
+
+        var parts = new List<string>();
+        foreach (var name in req.EnumerateArray())
+        {
+            var paramName = name.GetString();
+            if (string.IsNullOrEmpty(paramName)) continue;
+
+            string typeName = "any";
+            if (hasProps && props.TryGetProperty(paramName, out var propDef)
+                && propDef.ValueKind == JsonValueKind.Object
+                && propDef.TryGetProperty("type", out var t)
+                && t.ValueKind == JsonValueKind.String)
+            {
+                typeName = t.GetString() ?? "any";
+            }
+
+            var placeholder = typeName switch
+            {
+                "string" => $"\"<{paramName}>\"",
+                _        => $"<{paramName}>"
+            };
+            parts.Add($"\"{paramName}\": {placeholder}");
+        }
+
+        return parts.Count == 0 ? "{...}" : "{" + string.Join(", ", parts) + "}";
+    }
+
     public AgentService(
         NexusConfig config,
         IKnowledgeGraph graph,
@@ -48,6 +167,10 @@ public class AgentService : IAgentService
         LlmProviderFactory providerFactory,
         IInteractionSummarizer summarizer,
         IToolPlanner? toolPlanner = null,
+        IPlannerContextBuilder? plannerContextBuilder = null,
+        IToolVerifier? toolVerifier = null,
+        IPermissionGate? permissionGate = null,
+        IVerificationCatalog? verificationCatalog = null,
         IToolExecutor? toolExecutor = null,
         IToolArgumentValidator? argumentValidator = null,
         ISchemaValidator? schemaValidator = null,
@@ -64,6 +187,10 @@ public class AgentService : IAgentService
         _providerFactory = providerFactory;
         _summarizer = summarizer;
         _toolPlanner = toolPlanner;
+        _plannerContextBuilder = plannerContextBuilder;
+        _toolVerifier = toolVerifier;
+        _permissionGate = permissionGate;
+        _verificationCatalog = verificationCatalog;
         _toolExecutor = toolExecutor;
         _argumentValidator = argumentValidator;
         _schemaValidator = schemaValidator;
@@ -102,17 +229,62 @@ public class AgentService : IAgentService
                 .ConfigureAwait(false);
 
         // Plan-then-execute path (opt-in; falls through to normal loop on null plan)
+        // [DIAG-P9] log entry preconditions
+        _logger?.LogInformation(
+            "[DIAG-P9] ChatAsync plan-gate: plannerNotNull={P} toolExecNotNull={T} HasTools={H} plannerCtxBuilderNotNull={B} PlannerCtxEnabled={E} HistoryCount={Hist}",
+            _toolPlanner is not null,
+            _toolExecutor is not null,
+            _toolExecutor?.HasTools ?? false,
+            _plannerContextBuilder is not null,
+            _config.Mcp.PlannerContextEnabled,
+            _conversationHistory.Count);
+
         if (_toolPlanner is not null && _toolExecutor is not null && _toolExecutor.HasTools)
         {
-            var toolDefs = _toolExecutor.GetToolDefinitionsForPrompt(modelConfig.Model) ?? string.Empty;
-            var plan = await _toolPlanner.GeneratePlanAsync(userMessage, toolDefs, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (plan is not null && plan.Steps.Count > 0)
+            var heuristicAllow = true;
+            if (_config.Mcp.PlannerHeuristicEnabled)
             {
-                _logger?.LogInformation("ToolPlanner returned {Count} steps — entering plan-execute path", plan.Steps.Count);
-                return await ExecutePlanAsync(plan, userMessage, modelConfig, sw, cancellationToken)
+                var (shouldPlan, reason) = PlannerInvocationHeuristic.ShouldInvokePlanner(userMessage, _config);
+                _logger?.LogInformation("[Planner] heuristic: shouldPlan={ShouldPlan} reason={Reason}", shouldPlan, reason);
+                heuristicAllow = shouldPlan;
+            }
+
+            if (heuristicAllow)
+            {
+                var toolDefs = _toolExecutor.GetToolDefinitionsForPrompt(modelConfig.Model) ?? string.Empty;
+
+                PlannerContext? plannerContext = null;
+                if (_config.Mcp.PlannerContextEnabled && _plannerContextBuilder is not null)
+                {
+                    plannerContext = await _plannerContextBuilder
+                        .BuildAsync(_conversationHistory, userMessage, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    // [DIAG-P9] log built context
+                    _logger?.LogInformation(
+                        "[DIAG-P9] PlannerContext built: IsEmpty={Empty} Summary='{Summary}' RecentTurns={Count}",
+                        plannerContext?.IsEmpty ?? true,
+                        plannerContext?.Summary ?? "<null>",
+                        plannerContext?.RecentTurns.Count ?? 0);
+                }
+
+                var plan = await _toolPlanner.GeneratePlanAsync(
+                        userMessage, toolDefs, plannerContext, cancellationToken)
                     .ConfigureAwait(false);
+
+                // [DIAG-P9] log gate decision
+                _logger?.LogInformation(
+                    "[DIAG-P9] ChatAsync plan result: planNull={N} stepsCount={S} → {Action}",
+                    plan is null,
+                    plan?.Steps.Count ?? -1,
+                    (plan is not null && plan.Steps.Count > 0) ? "ENTER plan-execute" : "FALL THROUGH to legacy loop");
+
+                if (plan is not null && plan.Steps.Count > 0)
+                {
+                    _logger?.LogInformation("ToolPlanner returned {Count} steps — entering plan-execute path", plan.Steps.Count);
+                    return await ExecutePlanAsync(plan, userMessage, modelConfig, sw, cancellationToken)
+                        .ConfigureAwait(false);
+                }
             }
         }
 
@@ -253,18 +425,63 @@ public class AgentService : IAgentService
                 .ConfigureAwait(false);
 
         // Plan-then-execute path (opt-in; falls through to normal streaming loop on null plan)
+        // [DIAG-P9] log entry preconditions
+        _logger?.LogInformation(
+            "[DIAG-P9] ChatStreamAsync plan-gate: plannerNotNull={P} toolExecNotNull={T} HasTools={H} plannerCtxBuilderNotNull={B} PlannerCtxEnabled={E} HistoryCount={Hist}",
+            _toolPlanner is not null,
+            _toolExecutor is not null,
+            _toolExecutor?.HasTools ?? false,
+            _plannerContextBuilder is not null,
+            _config.Mcp.PlannerContextEnabled,
+            _conversationHistory.Count);
+
         if (_toolPlanner is not null && _toolExecutor is not null && _toolExecutor.HasTools)
         {
-            var toolDefs = _toolExecutor.GetToolDefinitionsForPrompt(modelConfig.Model) ?? string.Empty;
-            var plan = await _toolPlanner.GeneratePlanAsync(userMessage, toolDefs, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (plan is not null && plan.Steps.Count > 0)
+            var heuristicAllow = true;
+            if (_config.Mcp.PlannerHeuristicEnabled)
             {
-                _logger?.LogInformation("ToolPlanner returned {Count} steps — entering plan-execute stream path", plan.Steps.Count);
-                await foreach (var tok in ExecutePlanStreamAsync(plan, userMessage, modelConfig, onEntitiesExtracted, cancellationToken))
-                    yield return tok;
-                yield break;
+                var (shouldPlan, reason) = PlannerInvocationHeuristic.ShouldInvokePlanner(userMessage, _config);
+                _logger?.LogInformation("[Planner] heuristic: shouldPlan={ShouldPlan} reason={Reason}", shouldPlan, reason);
+                heuristicAllow = shouldPlan;
+            }
+
+            if (heuristicAllow)
+            {
+                var toolDefs = _toolExecutor.GetToolDefinitionsForPrompt(modelConfig.Model) ?? string.Empty;
+
+                PlannerContext? plannerContext = null;
+                if (_config.Mcp.PlannerContextEnabled && _plannerContextBuilder is not null)
+                {
+                    plannerContext = await _plannerContextBuilder
+                        .BuildAsync(_conversationHistory, userMessage, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    // [DIAG-P9] log built context
+                    _logger?.LogInformation(
+                        "[DIAG-P9] PlannerContext built: IsEmpty={Empty} Summary='{Summary}' RecentTurns={Count}",
+                        plannerContext?.IsEmpty ?? true,
+                        plannerContext?.Summary ?? "<null>",
+                        plannerContext?.RecentTurns.Count ?? 0);
+                }
+
+                var plan = await _toolPlanner.GeneratePlanAsync(
+                        userMessage, toolDefs, plannerContext, cancellationToken)
+                    .ConfigureAwait(false);
+
+                // [DIAG-P9] log gate decision
+                _logger?.LogInformation(
+                    "[DIAG-P9] ChatStreamAsync plan result: planNull={N} stepsCount={S} → {Action}",
+                    plan is null,
+                    plan?.Steps.Count ?? -1,
+                    (plan is not null && plan.Steps.Count > 0) ? "ENTER plan-execute stream" : "FALL THROUGH to legacy stream loop");
+
+                if (plan is not null && plan.Steps.Count > 0)
+                {
+                    _logger?.LogInformation("ToolPlanner returned {Count} steps — entering plan-execute stream path", plan.Steps.Count);
+                    await foreach (var tok in ExecutePlanStreamAsync(plan, userMessage, modelConfig, onEntitiesExtracted, cancellationToken))
+                        yield return tok;
+                    yield break;
+                }
             }
         }
 
@@ -410,7 +627,6 @@ public class AgentService : IAgentService
         foreach (var step in plan.Steps)
         {
             ct.ThrowIfCancellationRequested();
-
             if (step.MatchedToolName is null)
             {
                 _conversationHistory.Add(new ConversationMessage
@@ -421,83 +637,113 @@ public class AgentService : IAgentService
                 continue;
             }
 
-            // 3a. Instruct LLM for this step (AC-A2: [PLANNER] prefix marks synthetic messages)
-            var stepInstruction =
-                $"[PLANNER] Execute ONLY this step: use {step.MatchedToolName} to {step.Description}. Call the tool now with [TOOL_CALL: ...]";
-            _conversationHistory.Add(new ConversationMessage { Role = "user", Content = stepInstruction });
+            // _toolExecutor is non-null here — guarded at ChatAsync entry gate (line 105/256).
+            // Use null-forgiving to match the existing pattern throughout this method.
+            var schema = _toolExecutor!.GetToolSchema(step.MatchedToolName);
+            var maxAttempts = _config.Mcp.StepExecutionMaxAttempts;
+            var attempt = 1;
+            var stepCompleted = false;
 
-            // AC-B3: step-level info log parity (mirrors normal-loop "Tool call detected" log)
-            _logger?.LogInformation("Plan step {n}/{total}: tool={tool}", step.StepNumber, plan.Steps.Count, step.MatchedToolName);
-
-            // 3b. LLM round-trip
-            var reply = await CallLlmAsync(systemPrompt, modelConfig, ct).ConfigureAwait(false);
-            var toolCall = ToolCallParser.TryParse(reply);
-
-            // 3c. Retry once if no tool call (AC-5 exact retry message with [PLANNER] prefix per AC-A2)
-            if (toolCall is null)
+            while (attempt <= maxAttempts && !stepCompleted)
             {
-                var retryMsg = $"[PLANNER] You must call {step.MatchedToolName}. Use [TOOL_CALL: {{\"name\": \"{step.MatchedToolName}\", ...}}]";
-                _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = reply });
-                _conversationHistory.Add(new ConversationMessage { Role = "user", Content = retryMsg });
-                reply = await CallLlmAsync(systemPrompt, modelConfig, ct).ConfigureAwait(false);
-                toolCall = ToolCallParser.TryParse(reply);
-            }
+                ct.ThrowIfCancellationRequested();
+                var stepInstruction = BuildStepPrompt(attempt, step, schema);
+                _conversationHistory.Add(new ConversationMessage { Role = "user", Content = stepInstruction });
+                _logger?.LogInformation("Plan step {n}/{total} attempt {attempt}/{max}: tool={tool}",
+                    step.StepNumber, plan.Steps.Count, attempt, maxAttempts, step.MatchedToolName);
 
-            if (toolCall is null)
-            {
-                _logger?.LogWarning("PlanStep {N}: no tool call after retry — skipping", step.StepNumber);
+                var reply = await CallLlmAsync(systemPrompt, modelConfig, ct).ConfigureAwait(false);
+                var toolCall = ToolCallParser.TryParse(reply);
+
+                if (toolCall is null)
+                {
+                    _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = reply });
+                    attempt++;
+                    continue;
+                }
+
+                if (!string.Equals(toolCall.Name, step.MatchedToolName, StringComparison.OrdinalIgnoreCase))
+                    _logger?.LogWarning("PlanStep {N}: model called '{Actual}' instead of planned '{Planned}'",
+                        step.StepNumber, toolCall.Name, step.MatchedToolName);
+
+                string toolResult;
+                try { toolResult = await ExecuteToolWithTimeoutAsync(toolCall, ct).ConfigureAwait(false); }
+                catch (Exception ex) when (!ct.IsCancellationRequested)
+                {
+                    _logger?.LogWarning(ex, "Plan step {n} tool {tool} execution failed; continuing",
+                        step.StepNumber, step.MatchedToolName);
+                    _conversationHistory.Add(new ConversationMessage
+                    {
+                        Role = "assistant",
+                        Content = $"[Tool {step.MatchedToolName} failed: {ex.Message}]"
+                    });
+                    stepCompleted = true;
+                    break;
+                }
+
+                // ── AC-9: verification retry — counts against StepExecutionMaxAttempts budget ──
+                if (toolResult.StartsWith(SyntheticMarkers.VerificationWarningMarker, StringComparison.Ordinal)
+                    && _config.Mcp.ToolVerificationEnabled
+                    && attempt < maxAttempts)
+                {
+                    var reason = ExtractVerificationReason(toolResult);
+                    _logger?.LogWarning("Plan step {n} attempt {attempt}: verification failed; retrying",
+                        step.StepNumber, attempt);
+                    _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = reply });
+                    _conversationHistory.Add(new ConversationMessage
+                    {
+                        Role = "user",
+                        Content = $"[PlanStep {step.StepNumber}] Previous attempt unverified: {reason}. Retry with explicit content."
+                    });
+                    attempt++;
+                    continue;
+                }
+
+                var truncated = OutputTruncator.Truncate(toolResult, _config.Mcp.MaxOutputLines, _config.Mcp.MaxOutputBytes);
+                if (truncated.WasTruncated)
+                    _logger?.LogInformation("Tool output truncated: {OriginalLines} lines / {OriginalBytes} bytes → {TruncatedLength} chars",
+                        truncated.OriginalLines, truncated.OriginalBytes, truncated.Content.Length);
+                toolResult = truncated.Content;
+
                 _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = reply });
                 _conversationHistory.Add(new ConversationMessage
                 {
                     Role = "user",
-                    Content = $"[PlanStep {step.StepNumber}] No tool call produced; moving on."
+                    Content = $"[Tool result for step {step.StepNumber}]\n{toolResult}"
                 });
-                continue;
+                stepCompleted = true;
             }
 
-            // 3d. Model called a different tool — log, still execute
-            if (!string.Equals(toolCall.Name, step.MatchedToolName, StringComparison.OrdinalIgnoreCase))
+            if (!stepCompleted)
             {
-                _logger?.LogWarning("PlanStep {N}: model called '{Actual}' instead of planned '{Planned}'",
-                    step.StepNumber, toolCall.Name, step.MatchedToolName);
-            }
-
-            // 3e. Execute (reuses all existing validation/timeout); AC-A1: non-OCE failure continues plan
-            string toolResult;
-            try
-            {
-                toolResult = await ExecuteToolWithTimeoutAsync(toolCall, ct).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (!ct.IsCancellationRequested)
-            {
-                _logger?.LogWarning(ex, "Plan step {n} tool {tool} execution failed; continuing",
-                    step.StepNumber, step.MatchedToolName);
+                _logger?.LogError("PlanStep {n}: exceeded {max} attempts; moving on",
+                    step.StepNumber, maxAttempts);
                 _conversationHistory.Add(new ConversationMessage
                 {
-                    Role = "assistant",
-                    Content = $"[Tool {step.MatchedToolName} failed: {ex.Message}]"
+                    Role = "user",
+                    Content = $"[PlanStep {step.StepNumber}] Exceeded {maxAttempts} attempts; moving on."
                 });
-                continue;
             }
-
-            var truncated = OutputTruncator.Truncate(toolResult, _config.Mcp.MaxOutputLines, _config.Mcp.MaxOutputBytes);
-            // AC-B1: mirror normal-loop truncation log
-            if (truncated.WasTruncated)
-                _logger?.LogInformation("Tool output truncated: {OriginalLines} lines / {OriginalBytes} bytes → {TruncatedLength} chars",
-                    truncated.OriginalLines, truncated.OriginalBytes, truncated.Content.Length);
-            toolResult = truncated.Content;
-
-            // 3f. Append to history
-            _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = reply });
-            _conversationHistory.Add(new ConversationMessage
-            {
-                Role = "user",
-                Content = $"[PlanStep {step.StepNumber} Result]: {toolResult}"
-            });
         }
 
         // 4. Final summary LLM call (AC-A3: linked CTS guards against timeout; graceful fallback on timeout)
         var languageName = _config.Agent.Language;
+
+        // AC-6: inject grounding message when failures were detected so the LLM cannot claim success.
+        var findings = SummaryFailureAnalyzer.Analyze(_conversationHistory);
+        if (findings.HasFailures)
+        {
+            var grounding = SummaryFailureAnalyzer.BuildGroundingMessage(findings);
+            _conversationHistory.Add(new ConversationMessage
+            {
+                Role = "user",
+                Content = grounding
+            });
+            _logger?.LogInformation("[PlanResult] {V} verification, {R} retries, {T} tool errors, {P} permission, {D} doom",
+                findings.VerificationWarnings, findings.RetriesExhausted, findings.ToolErrors,
+                findings.PermissionDenials, findings.DoomLoops);
+        }
+
         _conversationHistory.Add(new ConversationMessage
         {
             Role = "user",
@@ -597,8 +843,6 @@ public class AgentService : IAgentService
         {
             ct.ThrowIfCancellationRequested();
 
-            yield return $"\n[Planning Step {step.StepNumber}/{totalSteps}: {step.Description}]\n";
-
             if (step.MatchedToolName is null)
             {
                 _conversationHistory.Add(new ConversationMessage
@@ -609,87 +853,116 @@ public class AgentService : IAgentService
                 continue;
             }
 
-            // 3a. Instruct LLM for this step (AC-A2: [PLANNER] prefix marks synthetic messages)
-            var stepInstruction =
-                $"[PLANNER] Execute ONLY this step: use {step.MatchedToolName} to {step.Description}. Call the tool now with [TOOL_CALL: ...]";
-            _conversationHistory.Add(new ConversationMessage { Role = "user", Content = stepInstruction });
+            // _toolExecutor is non-null here — guarded at ChatStreamAsync entry gate (line 105/256).
+            // Use null-forgiving to match the existing pattern throughout this method.
+            var schema = _toolExecutor!.GetToolSchema(step.MatchedToolName);
+            var maxAttempts = _config.Mcp.StepExecutionMaxAttempts;
+            var attempt = 1;
+            var stepCompleted = false;
 
-            // AC-B3: step-level info log parity (mirrors normal-loop "Tool call detected" log)
-            _logger?.LogInformation("Plan step {n}/{total}: tool={tool}", step.StepNumber, plan.Steps.Count, step.MatchedToolName);
-
-            // 3b. LLM round-trip
-            var reply = await CallLlmAsync(systemPrompt, modelConfig, ct).ConfigureAwait(false);
-            var toolCall = ToolCallParser.TryParse(reply);
-
-            // 3c. Retry once if no tool call (AC-5 exact retry message with [PLANNER] prefix per AC-A2)
-            if (toolCall is null)
+            while (attempt <= maxAttempts && !stepCompleted)
             {
-                var retryMsg = $"[PLANNER] You must call {step.MatchedToolName}. Use [TOOL_CALL: {{\"name\": \"{step.MatchedToolName}\", ...}}]";
-                _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = reply });
-                _conversationHistory.Add(new ConversationMessage { Role = "user", Content = retryMsg });
-                reply = await CallLlmAsync(systemPrompt, modelConfig, ct).ConfigureAwait(false);
-                toolCall = ToolCallParser.TryParse(reply);
-            }
+                ct.ThrowIfCancellationRequested();
+                yield return $"\n[Planning Step {step.StepNumber}/{totalSteps} attempt {attempt}/{maxAttempts}: {step.Description}]\n";
+                var stepInstruction = BuildStepPrompt(attempt, step, schema);
+                _conversationHistory.Add(new ConversationMessage { Role = "user", Content = stepInstruction });
+                _logger?.LogInformation("Plan step {n}/{total} attempt {attempt}/{max}: tool={tool}",
+                    step.StepNumber, plan.Steps.Count, attempt, maxAttempts, step.MatchedToolName);
 
-            if (toolCall is null)
-            {
-                _logger?.LogWarning("PlanStep {N}: no tool call after retry — skipping", step.StepNumber);
+                var reply = await CallLlmAsync(systemPrompt, modelConfig, ct).ConfigureAwait(false);
+                var toolCall = ToolCallParser.TryParse(reply);
+
+                if (toolCall is null)
+                {
+                    _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = reply });
+                    attempt++;
+                    continue;
+                }
+
+                if (!string.Equals(toolCall.Name, step.MatchedToolName, StringComparison.OrdinalIgnoreCase))
+                    _logger?.LogWarning("PlanStep {N}: model called '{Actual}' instead of planned '{Planned}'",
+                        step.StepNumber, toolCall.Name, step.MatchedToolName);
+
+                string toolResult;
+                try { toolResult = await ExecuteToolWithTimeoutAsync(toolCall, ct).ConfigureAwait(false); }
+                catch (Exception ex) when (!ct.IsCancellationRequested)
+                {
+                    _logger?.LogWarning(ex, "Plan step {n} tool {tool} execution failed; continuing",
+                        step.StepNumber, step.MatchedToolName);
+                    _conversationHistory.Add(new ConversationMessage
+                    {
+                        Role = "assistant",
+                        Content = $"[Tool {step.MatchedToolName} failed: {ex.Message}]"
+                    });
+                    stepCompleted = true;
+                    break;
+                }
+
+                // ── AC-9: verification retry — counts against StepExecutionMaxAttempts budget ──
+                if (toolResult.StartsWith(SyntheticMarkers.VerificationWarningMarker, StringComparison.Ordinal)
+                    && _config.Mcp.ToolVerificationEnabled
+                    && attempt < maxAttempts)
+                {
+                    var reason = ExtractVerificationReason(toolResult);
+                    _logger?.LogWarning("Plan step {n} attempt {attempt}: verification failed; retrying",
+                        step.StepNumber, attempt);
+                    _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = reply });
+                    _conversationHistory.Add(new ConversationMessage
+                    {
+                        Role = "user",
+                        Content = $"[PlanStep {step.StepNumber}] Previous attempt unverified: {reason}. Retry with explicit content."
+                    });
+                    attempt++;
+                    continue;
+                }
+
+                var truncated = OutputTruncator.Truncate(toolResult, _config.Mcp.MaxOutputLines, _config.Mcp.MaxOutputBytes);
+                if (truncated.WasTruncated)
+                    _logger?.LogInformation("Tool output truncated: {OriginalLines} lines / {OriginalBytes} bytes → {TruncatedLength} chars",
+                        truncated.OriginalLines, truncated.OriginalBytes, truncated.Content.Length);
+                toolResult = truncated.Content;
+
                 _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = reply });
                 _conversationHistory.Add(new ConversationMessage
                 {
                     Role = "user",
-                    Content = $"[PlanStep {step.StepNumber}] No tool call produced; moving on."
+                    Content = $"[Tool result for step {step.StepNumber}]\n{toolResult}"
                 });
-                continue;
+                stepCompleted = true;
             }
 
-            // 3d. Model called a different tool — log, still execute
-            if (!string.Equals(toolCall.Name, step.MatchedToolName, StringComparison.OrdinalIgnoreCase))
+            if (!stepCompleted)
             {
-                _logger?.LogWarning("PlanStep {N}: model called '{Actual}' instead of planned '{Planned}'",
-                    step.StepNumber, toolCall.Name, step.MatchedToolName);
-            }
-
-            // 3e. Execute (reuses all existing validation/timeout); AC-A1: non-OCE failure continues plan
-            string toolResult;
-            try
-            {
-                toolResult = await ExecuteToolWithTimeoutAsync(toolCall, ct).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (!ct.IsCancellationRequested)
-            {
-                _logger?.LogWarning(ex, "Plan step {n} tool {tool} execution failed; continuing",
-                    step.StepNumber, step.MatchedToolName);
+                _logger?.LogError("PlanStep {n}: exceeded {max} attempts; moving on",
+                    step.StepNumber, maxAttempts);
                 _conversationHistory.Add(new ConversationMessage
                 {
-                    Role = "assistant",
-                    Content = $"[Tool {step.MatchedToolName} failed: {ex.Message}]"
+                    Role = "user",
+                    Content = $"[PlanStep {step.StepNumber}] Exceeded {maxAttempts} attempts; moving on."
                 });
-                continue;
             }
-
-            var truncated = OutputTruncator.Truncate(toolResult, _config.Mcp.MaxOutputLines, _config.Mcp.MaxOutputBytes);
-            // AC-B1: mirror normal-loop truncation log
-            if (truncated.WasTruncated)
-                _logger?.LogInformation("Tool output truncated: {OriginalLines} lines / {OriginalBytes} bytes → {TruncatedLength} chars",
-                    truncated.OriginalLines, truncated.OriginalBytes, truncated.Content.Length);
-            toolResult = truncated.Content;
-
-            // 3f. Append to history
-            _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = reply });
-            _conversationHistory.Add(new ConversationMessage
-            {
-                Role = "user",
-                Content = $"[PlanStep {step.StepNumber} Result]: {toolResult}"
-            });
-
-            yield return $"\n[Step {step.StepNumber} completed.]\n";
         }
 
         // 4. Final summary — stream tokens via manual enumerator drain (AC-B2)
         // Using IAsyncEnumerator manually so we can yield a fallback marker inside the catch block.
         // yield return cannot appear inside a catch directly, so we split the try/catch around MoveNextAsync.
         var languageName = _config.Agent.Language;
+
+        // AC-6: inject grounding message when failures were detected so the LLM cannot claim success.
+        var findings = SummaryFailureAnalyzer.Analyze(_conversationHistory);
+        if (findings.HasFailures)
+        {
+            var grounding = SummaryFailureAnalyzer.BuildGroundingMessage(findings);
+            _conversationHistory.Add(new ConversationMessage
+            {
+                Role = "user",
+                Content = grounding
+            });
+            _logger?.LogInformation("[PlanResult] {V} verification, {R} retries, {T} tool errors, {P} permission, {D} doom",
+                findings.VerificationWarnings, findings.RetriesExhausted, findings.ToolErrors,
+                findings.PermissionDenials, findings.DoomLoops);
+        }
+
         _conversationHistory.Add(new ConversationMessage
         {
             Role = "user",
@@ -792,9 +1065,9 @@ public class AgentService : IAgentService
         var currentTurn = _turnCount;
         var historySnapshot = _conversationHistory.ToList();
 
-        // AC-A2: filter synthetic [PLANNER] messages before building conversationText for extraction
+        // AC-A2: filter synthetic messages before building conversationText for extraction
         var filteredSnapshot = historySnapshot
-            .Where(m => !m.Content.StartsWith("[PLANNER] ", StringComparison.Ordinal))
+            .Where(m => !SyntheticMarkers.IsSynthetic(m.Content))
             .ToList();
         if (filteredSnapshot.Count < historySnapshot.Count)
         {
@@ -916,12 +1189,80 @@ public class AgentService : IAgentService
             effectiveArguments = outcome.CorrectedArguments;
         }
 
+        // Resolve the server name early — used by both the permission gate and the verifier.
+        var serverName = _toolExecutor.GetToolServerName(toolCall.Name);
+
+        // Permission gate: consult IPermissionGate for destructive tools or config-flagged tools.
+        // Gate is only invoked when enabled and the tool is marked destructive (or config says "ask").
+        // If the gate DENIES: return a PermissionDenied sentinel immediately (no tool execution, no snapshot).
+        // If the gate THROWS (implementation bug): log Warning and fall through to allow — gate bugs must
+        // not silently lock up the agent (§11.7 safety-by-default for unrelated impl bugs).
+        if (_permissionGate is not null && _config.Permission.Enabled)
+        {
+            var catalogRule = _verificationCatalog?.GetRule(serverName, toolCall.Name);
+            var requiresAsk = catalogRule?.Destructive == true || ResolveConfigAction(toolCall.Name) == "ask";
+            if (requiresAsk)
+            {
+                var patterns = PermissionPatternExtractor.Extract(toolCall.Name, effectiveArguments, catalogRule);
+                var request = new PermissionRequest(
+                    serverName,
+                    toolCall.Name,
+                    effectiveArguments,
+                    patterns,
+                    catalogRule?.Destructive == true ? "destructive operation" : "config requires confirmation");
+                try
+                {
+                    var gateResponse = await _permissionGate
+                        .RequestAsync(request, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (gateResponse.Decision is PermissionDecision.Deny or PermissionDecision.DenyWithFeedback)
+                    {
+                        var reason = !string.IsNullOrWhiteSpace(gateResponse.Feedback)
+                            ? gateResponse.Feedback!
+                            : "user denied";
+                        _logger?.LogWarning("[PermissionGate] {Tool} denied: {Reason}", toolCall.Name, reason);
+                        return $"{SyntheticMarkers.PermissionDeniedPrefix}{reason}";
+                    }
+                    // Allow / AllowForSession / AllowPersisted: gate impl persists state internally.
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    _logger?.LogWarning(ex,
+                        "[PermissionGate] {Tool} gate threw — defaulting to Allow (safety-by-default for unrelated impl bugs)",
+                        toolCall.Name);
+                    // Fall through to tool execution — ALLOWS the tool.
+                }
+            }
+        }
+
+        // Pre-snapshot capture for SnapshotDiff verification.
+        // Snapshot tool calls are wrapped internally in a linked CTS with VerificationSnapshotTimeoutSeconds.
+        // OperationCanceledException is rethrown unconditionally; other exceptions are logged as Warning
+        // and verification is skipped (not fatal — the tool execution still proceeds).
+        IReadOnlyDictionary<string, object>? preSnapshot = null;
+        if (_toolVerifier is not null && _config.Mcp.ToolVerificationEnabled)
+        {
+            try
+            {
+                preSnapshot = await _toolVerifier
+                    .CapturePreSnapshotAsync(serverName, toolCall.Name, effectiveArguments, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "[Verifier] pre-snapshot for {Tool} failed; continuing", toolCall.Name);
+            }
+        }
+
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromSeconds(_config.Mcp.ToolCallTimeoutSeconds));
 
+        string rawResult;
         try
         {
-            return await _toolExecutor.InvokeToolAsync("", toolCall.Name, effectiveArguments, cts.Token).ConfigureAwait(false);
+            rawResult = await _toolExecutor.InvokeToolAsync("", toolCall.Name, effectiveArguments, cts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -942,6 +1283,63 @@ public class AgentService : IAgentService
             _logger?.LogWarning(ex, "Tool '{ToolName}' execution failed", toolCall.Name);
             return $"Error executing tool '{toolCall.Name}': {ex.Message}";
         }
+
+        // ── AC-8: verify post-execution ──
+        if (_toolVerifier is not null && _config.Mcp.ToolVerificationEnabled)
+        {
+            try
+            {
+                var outcome = await _toolVerifier
+                    .VerifyAsync(serverName, toolCall.Name, effectiveArguments, preSnapshot, rawResult, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (outcome.RuleMatched && !outcome.IsVerified)
+                {
+                    _logger?.LogWarning("[Verifier] {Tool} unverified: {Reason}", toolCall.Name, outcome.Reason);
+                    return $"{SyntheticMarkers.VerificationWarningPrefix}{outcome.Reason}\n{rawResult}";
+                }
+                if (outcome.RuleMatched && outcome.IsVerified)
+                {
+                    _logger?.LogInformation("[Verifier] {Tool} verified", toolCall.Name);
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "[Verifier] verify post-call for {Tool} failed; continuing", toolCall.Name);
+            }
+        }
+
+        return rawResult;
+    }
+
+    /// <summary>
+    /// Extracts the {reason} portion from a "[VerificationWarning] {reason}\n{rawResult}" string.
+    /// Returns "unverified" if the format is not recognized.
+    /// </summary>
+    private static string ExtractVerificationReason(string warningResult)
+    {
+        if (!warningResult.StartsWith(SyntheticMarkers.VerificationWarningPrefix, StringComparison.Ordinal)) return "unverified";
+        var afterPrefix = warningResult.Substring(SyntheticMarkers.VerificationWarningPrefix.Length);
+        var newlineIdx = afterPrefix.IndexOf('\n');
+        return newlineIdx > 0 ? afterPrefix.Substring(0, newlineIdx) : afterPrefix;
+    }
+
+    /// <summary>
+    /// Resolves the configured permission action ("allow", "ask", or "deny") for a tool from
+    /// <see cref="PermissionConfig.Tools"/>. Returns null when no rule is configured for the tool
+    /// or when the action value is not one of the three known values.
+    /// </summary>
+    private string? ResolveConfigAction(string toolName)
+    {
+        if (_config.Permission?.Tools is not null
+            && _config.Permission.Tools.TryGetValue(toolName, out var rule)
+            && !string.IsNullOrWhiteSpace(rule?.Action))
+        {
+            var action = rule.Action.ToLowerInvariant();
+            return action is "allow" or "ask" or "deny" ? action : null;
+        }
+        return null;
     }
 
     private static string BuildToolSignature(ToolCallRequest toolCall)

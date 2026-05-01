@@ -18,6 +18,7 @@ public sealed class PathValidator : IToolArgumentValidator
     private readonly ToolRegistry _toolRegistry;
     private readonly ILogger<PathValidator>? _logger;
     private readonly int _fuzzyThreshold;
+    private readonly int _strictDistance;
     private readonly TimeSpan _cacheTtl;
 
     // Key: allowed root dir → (expiry UTC, catalog entries under that root)
@@ -44,6 +45,7 @@ public sealed class PathValidator : IToolArgumentValidator
         _toolRegistry = toolRegistry;
         _logger = logger;
         _fuzzyThreshold = fuzzyThreshold;
+        _strictDistance = config.Mcp.PathValidatorStrictDistance;
         _cacheTtl = cacheTtl ?? TimeSpan.FromSeconds(60);
         _allowedDirectories = ExtractAllowedDirectories(config.Mcp.Servers);
     }
@@ -199,10 +201,40 @@ public sealed class PathValidator : IToolArgumentValidator
 
         // ── Source paths: find the actual file/dir in the catalog ──
 
-        // 4. Find best match in catalog
-        var match = FindBestMatch(normalized, catalog);
+        // AC-7: pre-check whether the original (normalized) path already exists on disk.
+        var originalExists = File.Exists(normalized) || Directory.Exists(normalized);
+
+        // AC-7: whether the model's path was in the expected search space (allowed dirs).
+        // The strict-distance guard only applies for paths that are within allowed dirs —
+        // these are the stale-state candidates. Paths from a completely different root
+        // (outside allowed dirs) are legitimate "wrong root" corrections and skip the guard.
+        var originalWithinAllowed = IsWithinAllowedDirectory(normalized);
+
+        // 4. Find best match in catalog (with score for strict-distance gate)
+        var match = FindBestMatchWithScore(normalized, catalog, out var distance);
         if (match is not null)
+        {
+            // STEP A — existence wins: never silently correct a path that already exists.
+            if (originalExists)
+                return new PathCheckResult(true, normalized, false, null);
+
+            // STEP B — strict distance: when original is within allowed dirs but missing,
+            // require a high-confidence full-path match before silently substituting.
+            // This prevents stale-state false positives where a moved/deleted file would
+            // be silently redirected to an unrelated file with the same name.
+            // Paths from outside allowed dirs (wrong root) bypass this guard — they are
+            // legitimate cross-root corrections the catalog was designed to fix.
+            if (originalWithinAllowed && distance < _strictDistance)
+            {
+                _logger?.LogWarning(
+                    "[PathValidator] stale-state guard: original '{Raw}' missing; rejected '{Match}' (score {Score} < strict {Strict})",
+                    rawPath, match, distance, _strictDistance);
+                return new PathCheckResult(false, null, false,
+                    $"Path '{rawPath}' not found and closest match '{match}' is too distant (score {distance}/{_strictDistance}). Did you mean:\n{GetSuggestions(normalized, catalog)}");
+            }
+
             return new PathCheckResult(true, match, true, null);
+        }
 
         // 5. Write tools: allow new path if parent can be matched
         if (WriteTools.Contains(toolName))
@@ -257,7 +289,12 @@ public sealed class PathValidator : IToolArgumentValidator
     // ── Catalog-based matching ────────────────────────────────────
 
     internal string? FindBestMatch(string proposedPath, List<CatalogEntry> catalog)
+        => FindBestMatchWithScore(proposedPath, catalog, out _);
+
+    internal string? FindBestMatchWithScore(string proposedPath, List<CatalogEntry> catalog, out int distance)
     {
+        distance = 0;
+
         if (catalog.Count == 0)
             return null;
 
@@ -270,22 +307,72 @@ public sealed class PathValidator : IToolArgumentValidator
             .ToList();
 
         if (exactMatches.Count > 0)
-            return SelectBestByFullPath(proposedPath, exactMatches)?.FullPath;
+        {
+            var best = SelectBestByFullPath(proposedPath, exactMatches);
+            if (best is not null)
+            {
+                // Basename-uniqueness short-circuit (Sprint 10 follow-up):
+                // When exactly one catalog entry carries this basename, the basename is
+                // unambiguous — there is no other candidate that could be confused with it.
+                // Treat as max confidence (100) so the strict-distance gate in the caller
+                // does not block legitimate cross-directory references such as
+                // "nexus/ecomerce" → "D:\Nexus\ecomerce" where a long CWD prefix would
+                // otherwise drag the full-path Fuzz.Ratio score below the strict threshold.
+                //
+                // When count > 1 (e.g. many index.html files exist across the catalog —
+                // the actual Bug 4 scenario), keep the full-path score so the strict-distance
+                // gate continues to disambiguate correctly. A unique basename has nothing to
+                // disambiguate; an ambiguous one needs the path context to decide.
+                distance = exactMatches.Count == 1
+                    ? 100
+                    : Fuzz.Ratio(
+                        proposedPath.ToLowerInvariant(),
+                        best.FullPath.ToLowerInvariant());
+            }
+            return best?.FullPath;
+        }
 
-        var fuzzyMatches = new List<CatalogEntry>();
+        var fuzzyMatches = new List<(CatalogEntry Entry, int Score)>();
         foreach (var entry in catalog)
         {
             var score = Fuzz.Ratio(
                 proposedName.ToLowerInvariant(),
                 entry.Name.ToLowerInvariant());
             if (score >= _fuzzyThreshold)
-                fuzzyMatches.Add(entry);
+                fuzzyMatches.Add((entry, score));
         }
 
         if (fuzzyMatches.Count == 0)
             return null;
 
-        return SelectBestByFullPath(proposedPath, fuzzyMatches)?.FullPath;
+        var bestEntries = fuzzyMatches.Select(x => x.Entry).ToList();
+        var bestEntry = SelectBestByFullPath(proposedPath, bestEntries);
+        if (bestEntry is not null)
+        {
+            // Basename-uniqueness short-circuit (fuzzy / typo-correction branch).
+            // Same principle as the exact-match branch above: when only one catalog entry
+            // has a basename close enough to clear _fuzzyThreshold, the candidate is
+            // unambiguous — there is no other entry to confuse it with. Use the basename
+            // score as the strict-distance signal, not the full-path score, so legitimate
+            // typo corrections ("ecommerce" → "ecomerce", basename score ~94) survive the
+            // strict gate even when a long CWD-prefix divergence drags the full-path
+            // Fuzz.Ratio below 90.
+            //
+            // The strict-distance gate then becomes "minimum confidence in the basename
+            // match" — a near-perfect typo (score ≥ 90) is accepted; a severely garbled
+            // typo (score barely above _fuzzyThreshold=80) is still rejected by STEP B.
+            //
+            // When count > 1 (multiple typo candidates in different directories), fall
+            // back to full-path Fuzz.Ratio so the strict gate disambiguates correctly.
+            // This preserves Bug 4 protection: many index.html files → ambiguous → strict.
+            var bestFuzzy = fuzzyMatches.First(m => ReferenceEquals(m.Entry, bestEntry));
+            distance = fuzzyMatches.Count == 1
+                ? bestFuzzy.Score
+                : Fuzz.Ratio(
+                    proposedPath.ToLowerInvariant(),
+                    bestEntry.FullPath.ToLowerInvariant());
+        }
+        return bestEntry?.FullPath;
     }
 
     internal string? FindBestMatchForParent(string proposedPath, List<CatalogEntry> catalog)

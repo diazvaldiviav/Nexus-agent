@@ -1,0 +1,62 @@
+server: filesystem
+tools:
+  - name: write_file
+    mutates: true
+    destructive: true
+    method: snapshot_diff
+    snapshot:
+      tool: read_text_file
+      args_from:
+        path: $.path
+      compare: not_equal
+    empty_post_is_failure: true
+  - name: edit_file
+    mutates: true
+    destructive: true
+    method: snapshot_diff
+    snapshot:
+      tool: read_text_file
+      args_from:
+        path: $.path
+      compare: not_equal
+  - name: create_directory
+    mutates: true
+    method: response_keywords
+    success_keywords: ["created", "exists", "successfully"]
+    failure_keywords: ["error", "denied", "failed"]
+  - name: read_text_file
+    mutates: false
+  - name: list_directory
+    mutates: false
+  - name: directory_tree
+    mutates: false
+  - name: list_allowed_directories
+    mutates: false
+  - name: search_files
+    mutates: false
+  - name: get_file_info
+    mutates: false
+  - name: move_file
+    mutates: true
+    destructive: true
+    method: response_keywords
+    success_keywords: ["moved", "renamed", "successfully"]
+    failure_keywords: ["error", "denied", "not found", "failed"]
+  - name: delete_file
+    mutates: true
+    destructive: true
+    method: response_keywords
+    success_keywords: ["deleted", "removed", "successfully"]
+    failure_keywords: ["error", "denied", "not found", "failed"]
+  - name: delete_directory
+    mutates: true
+    destructive: true
+    method: response_keywords
+    success_keywords: ["deleted", "removed", "empty"]
+    failure_keywords: ["error", "denied", "not empty", "failed"]
+  - name: move_directory
+    mutates: true
+    destructive: true
+    method: response_keywords
+    success_keywords: ["moved", "renamed", "successfully"]
+    failure_keywords: ["error", "denied", "failed"]

@@ -25,6 +25,31 @@ public static class ConfigValidator
             ValidateToolPlanningEnabled(config.Mcp.ToolPlanningEnabled, config.Models.Local));
         AddIfNotNull(errors, "Mcp.ToolPlanningTimeoutSeconds",
             ValidateToolPlanningTimeoutSeconds(config.Mcp.ToolPlanningTimeoutSeconds));
+        AddIfNotNull(errors, "Mcp.StepExecutionMaxAttempts",
+            ValidateStepExecutionMaxAttempts(config.Mcp.StepExecutionMaxAttempts));
+        AddIfNotNull(errors, "Mcp.PlannerContextMaxBytes",
+            ValidatePlannerContextMaxBytes(config.Mcp.PlannerContextMaxBytes));
+        AddIfNotNull(errors, "Mcp.PlannerContextMaxRecentTurns",
+            ValidatePlannerContextMaxRecentTurns(config.Mcp.PlannerContextMaxRecentTurns));
+        AddIfNotNull(errors, "Mcp.PlannerContextMaxBytesPerTurn",
+            ValidatePlannerContextMaxBytesPerTurn(config.Mcp.PlannerContextMaxBytesPerTurn));
+        AddIfNotNull(errors, "Mcp.VerificationSnapshotTimeoutSeconds",
+            ValidateVerificationSnapshotTimeoutSeconds(config.Mcp.VerificationSnapshotTimeoutSeconds));
+        AddIfNotNull(errors, "Mcp.PathValidatorStrictDistance",
+            ValidatePathValidatorStrictDistance(config.Mcp.PathValidatorStrictDistance));
+        AddIfNotNull(errors, "Mcp.PlannerHeuristicMinLength",
+            ValidatePlannerHeuristicMinLength(config.Mcp.PlannerHeuristicMinLength));
+        AddIfNotNull(errors, "Mcp.ToolPlannerEmbeddingMatchThreshold",
+            ValidateToolPlannerEmbeddingMatchThreshold(config.Mcp.ToolPlannerEmbeddingMatchThreshold));
+        foreach (var (toolName, rule) in config.Permission.Tools)
+        {
+            AddIfNotNull(errors, $"Permission.Tools[{toolName}].Action",
+                ValidatePermissionAction(rule.Action));
+            if (rule.Patterns is not null)
+                foreach (var (pattern, action) in rule.Patterns)
+                    AddIfNotNull(errors, $"Permission.Tools[{toolName}].Patterns[{pattern}]",
+                        ValidatePermissionAction(action));
+        }
         for (var i = 0; i < config.Mcp.Servers.Count; i++)
             AddIfNotNull(errors, $"Mcp.Servers[{i}]", ValidateMcpServerEntry(config.Mcp.Servers[i]));
         return new ValidationResult(errors);
@@ -68,6 +93,40 @@ public static class ConfigValidator
 
     public static string? ValidateToolPlanningTimeoutSeconds(int value)
         => value < 5 || value > 300 ? "ToolPlanningTimeoutSeconds must be between 5 and 300." : null;
+
+    public static string? ValidateStepExecutionMaxAttempts(int value)
+        => value < 1 || value > 20 ? "StepExecutionMaxAttempts must be between 1 and 20." : null;
+
+    public static string? ValidatePlannerContextMaxBytes(int value)
+        => value < 200 || value > 16000 ? "PlannerContextMaxBytes must be between 200 and 16000." : null;
+
+    public static string? ValidatePlannerContextMaxRecentTurns(int value)
+        => value < 1 || value > 20 ? "PlannerContextMaxRecentTurns must be between 1 and 20." : null;
+
+    public static string? ValidatePlannerContextMaxBytesPerTurn(int value)
+        => value < 80 || value > 4000 ? "PlannerContextMaxBytesPerTurn must be between 80 and 4000." : null;
+
+    public static string? ValidateVerificationSnapshotTimeoutSeconds(int value)
+        => value < 1 || value > 60 ? "VerificationSnapshotTimeoutSeconds must be between 1 and 60." : null;
+
+    public static string? ValidatePathValidatorStrictDistance(int value)
+        => value < 50 || value > 100 ? "PathValidatorStrictDistance must be between 50 and 100." : null;
+
+    public static string? ValidatePlannerHeuristicMinLength(int value)
+        => value < 1 || value > 200 ? "PlannerHeuristicMinLength must be between 1 and 200." : null;
+
+    public static string? ValidateToolPlannerEmbeddingMatchThreshold(float value)
+        => value < 0.40f || value > 0.95f
+            ? "ToolPlannerEmbeddingMatchThreshold must be between 0.40 and 0.95."
+            : null;
+
+    public static string? ValidatePermissionAction(string? action)
+    {
+        if (action is null) return null;
+        return action.ToLowerInvariant() is "allow" or "ask" or "deny"
+            ? null
+            : $"PermissionToolRule.Action must be 'allow', 'ask', or 'deny' (got '{action}').";
+    }
 
     public static string? ValidateMcpServerEntry(McpServerEntry entry)
     {

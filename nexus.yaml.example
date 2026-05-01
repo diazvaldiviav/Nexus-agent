@@ -81,6 +81,25 @@ mcp:
   # tool_filtering_enabled: false   # Complexity-based tool filtering for small models (default: false)
   # tool_planning_enabled: false   # Plan-then-execute for small models (default: false)
   # tool_planning_timeout_seconds: 30   # Max seconds for planner LLM call (5..300)
+  # step_execution_max_attempts: 5   # Bounded retry attempts per plan step (1..20)
+
+  # Phase 9 — Planner Context Builder
+  planner_context_enabled: true        # Inject recent conversation context into planner prompt (default: true)
+  planner_context_max_bytes: 1500      # Max total UTF-8 bytes for planner context block (200..16000)
+  planner_context_max_recent_turns: 4  # Max non-synthetic messages to include (1..20)
+  planner_context_max_bytes_per_turn: 280  # Per-message truncation limit (80..4000)
+
+  # Phase 9 — Tool Verification
+  tool_verification_enabled: true      # Enable pre/post snapshot verification for mutating tools (default: true)
+  verification_snapshot_timeout_seconds: 10  # Timeout per snapshot tool call in seconds (1..60)
+
+  # AC-1 — Planner Heuristic Gate
+  # Heuristic gate that skips the planner for chat/greetings/short messages.
+  # When enabled, deterministic regex+verb-list checks short-circuit before
+  # the planner LLM call — saludos like "hola" never enter plan mode.
+  planner_heuristic_enabled: true
+  planner_heuristic_min_length: 16
+
   servers:
     # Example: stdio transport (most common — runs a local command)
     # - name: filesystem

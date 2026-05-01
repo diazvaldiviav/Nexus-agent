@@ -45,13 +45,39 @@ public interface IToolPlanner
 {
     /// <summary>
     /// Generates a <see cref="ToolPlan"/> for <paramref name="userMessage"/> using the
-    /// available tool definitions, or returns <see langword="null"/> on failure or when
-    /// the feature gate is inactive.
+    /// available tool definitions and optional conversation context, or returns
+    /// <see langword="null"/> on failure or when the feature gate is inactive.
     /// </summary>
     /// <param name="userMessage">The raw user message for which a plan should be produced.</param>
     /// <param name="toolDefinitionsForPrompt">
     /// Tool definitions formatted for inclusion in a prompt
     /// (e.g. from <c>IToolExecutor.GetToolDefinitionsForPrompt(modelName)</c>).
+    /// </param>
+    /// <param name="context">
+    /// Optional compact conversation context to inject into the planning prompt.
+    /// Pass <see langword="null"/> or <see cref="PlannerContext.Empty"/> to produce a prompt
+    /// byte-identical to the Phase 8 baseline (no context block inserted).
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token honored on every async operation.</param>
+    /// <returns>
+    /// A <see cref="ToolPlan"/> containing the matched steps, or <see langword="null"/>
+    /// if planning is disabled, no tools are available, or a non-cancellation failure occurs.
+    /// </returns>
+    Task<ToolPlan?> GeneratePlanAsync(
+        string userMessage,
+        string toolDefinitionsForPrompt,
+        PlannerContext? context,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Generates a <see cref="ToolPlan"/> without conversation context.
+    /// Equivalent to calling
+    /// <see cref="GeneratePlanAsync(string, string, PlannerContext?, CancellationToken)"/>
+    /// with <c>context: null</c>.
+    /// </summary>
+    /// <param name="userMessage">The raw user message for which a plan should be produced.</param>
+    /// <param name="toolDefinitionsForPrompt">
+    /// Tool definitions formatted for inclusion in a prompt.
     /// </param>
     /// <param name="ct">Cancellation token honored on every async operation.</param>
     /// <returns>
@@ -61,5 +87,6 @@ public interface IToolPlanner
     Task<ToolPlan?> GeneratePlanAsync(
         string userMessage,
         string toolDefinitionsForPrompt,
-        CancellationToken ct = default);
+        CancellationToken ct = default)
+        => GeneratePlanAsync(userMessage, toolDefinitionsForPrompt, context: null, ct);
 }

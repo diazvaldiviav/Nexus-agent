@@ -59,9 +59,15 @@ if (!validationResult.IsValid)
 
 // ── Phase 4: DI setup ──
 var services = new ServiceCollection();
-services.AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Error));
+services.AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Information)); // [DIAG-P9] temp: was Error
 services.AddNexusAgent(config);
 services.AddNexusMcp();
+services.AddSingleton(sp => new PersistentPermissionStore(
+    Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        ".nexus", "permissions.json"),
+    sp.GetService<ILogger<PersistentPermissionStore>>()));
+services.AddSingleton<IPermissionGate, CliPermissionGate>();
 var sp = services.BuildServiceProvider();
 
 // ── Phase 5: Normal command routing ──
