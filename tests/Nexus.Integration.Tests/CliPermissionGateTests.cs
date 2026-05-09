@@ -37,7 +37,7 @@ public sealed class CliPermissionGateTests : IDisposable
     {
         Models = new ModelsConfig
         {
-            Local = new ModelProviderConfig { Model = "qwen3:14b" }
+            Local = new ModelProviderConfig { Model = "llama3:70b" }  // Full tier (≥ 30B)
         }
     };
 

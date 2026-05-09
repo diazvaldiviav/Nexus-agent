@@ -47,7 +47,9 @@ public class ContextWindowManager
         var threshold = (int)(effectiveBudget * _memoryConfig.ContextCompactionThreshold);
         var estimatedTokens = EstimateTokens(systemPrompt, history);
 
-        Console.Error.WriteLine($"[ContextWindowManager] Tokens: ~{estimatedTokens} / {threshold} threshold ({estimatedTokens * 100 / Math.Max(threshold, 1)}%) | history: {history.Count} msgs | budget: {effectiveBudget}");
+        _logger?.LogDebug(
+            "Context tokens: ~{Tokens} / {Threshold} ({Percent}%) | history: {Count} msgs | budget: {Budget}",
+            estimatedTokens, threshold, estimatedTokens * 100 / Math.Max(threshold, 1), history.Count, effectiveBudget);
 
         if (estimatedTokens < threshold) return false;
         var keepCount = _memoryConfig.CompactionKeepRecentMessages;
@@ -82,7 +84,9 @@ public class ContextWindowManager
 
         var afterTokens = EstimateTokens(systemPrompt, history);
 
-        Console.Error.WriteLine($"[ContextWindowManager] COMPACTED: {estimatedTokens} → {afterTokens} tokens | summarized {oldMessages.Count} msgs, kept {recentMessages.Count}");
+        _logger?.LogDebug(
+            "Context compacted: {Before} → {After} tokens | summarized {Old} msgs, kept {Kept}",
+            estimatedTokens, afterTokens, oldMessages.Count, recentMessages.Count);
 
         _logger?.LogInformation(
             "Compacted conversation: {Before} tokens -> {After} tokens, summarized {Count} messages",

@@ -4,224 +4,149 @@ namespace Nexus.Integration.Tests;
 
 public class ToolCapabilityResolverTests
 {
+    // Tier breakpoints (from ToolCapabilityResolver):
+    //   < 4B  → ChatOnly  (cannot reliably emit tool-call JSON; planner is skipped)
+    //   < 8B  → Limited   (small models — Complex tools excluded, edit_file overridden)
+    //   < 30B → Capable   (mid models — handle moderate schemas reliably)
+    //   ≥ 30B → Full      (large models — full tool-use)
+
     // -------------------------------------------------------------------------
-    // 1. sub-1B decimal → Limited
+    // ChatOnly tier (< 4B)
     // -------------------------------------------------------------------------
 
     [Fact]
-    public void Resolve_SubOneBDecimal_ReturnsLimited()
+    public void Resolve_SubOneBDecimal_ReturnsChatOnly()
     {
-        // Arrange
-        const string modelName = "qwen3:0.6b";
+        var result = ToolCapabilityResolver.Resolve("qwen3:0.6b");
+        Assert.Equal(ToolCallingTier.ChatOnly, result);
+    }
 
-        // Act
-        var result = ToolCapabilityResolver.Resolve(modelName);
+    [Fact]
+    public void Resolve_SmallDecimal_ReturnsChatOnly()
+    {
+        var result = ToolCapabilityResolver.Resolve("qwen3:1.7b");
+        Assert.Equal(ToolCallingTier.ChatOnly, result);
+    }
 
-        // Assert
+    [Fact]
+    public void Resolve_TwoB_ReturnsChatOnly()
+    {
+        var result = ToolCapabilityResolver.Resolve("gemma2:2b");
+        Assert.Equal(ToolCallingTier.ChatOnly, result);
+    }
+
+    [Fact]
+    public void Resolve_ThreeBWithSuffix_ReturnsChatOnly()
+    {
+        var result = ToolCapabilityResolver.Resolve("llama3.2:3b-instruct");
+        Assert.Equal(ToolCallingTier.ChatOnly, result);
+    }
+
+    [Fact]
+    public void Resolve_HyphenSeparatorThreeB_ReturnsChatOnly()
+    {
+        var result = ToolCapabilityResolver.Resolve("llama3.2-3b");
+        Assert.Equal(ToolCallingTier.ChatOnly, result);
+    }
+
+    // -------------------------------------------------------------------------
+    // Limited tier (4B ≤ b < 8B)
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void Resolve_BoundaryFour_ReturnsLimited()
+    {
+        var result = ToolCapabilityResolver.Resolve("Qwen3.5:4B");
+        Assert.Equal(ToolCallingTier.Limited, result);
+    }
+
+    [Fact]
+    public void Resolve_SevenB_ReturnsLimited()
+    {
+        var result = ToolCapabilityResolver.Resolve("mistral:7b");
         Assert.Equal(ToolCallingTier.Limited, result);
     }
 
     // -------------------------------------------------------------------------
-    // 2. decimal < 3 → Limited
+    // Capable tier (8B ≤ b < 30B)
     // -------------------------------------------------------------------------
 
     [Fact]
-    public void Resolve_DecimalLessThanThree_ReturnsLimited()
+    public void Resolve_BoundaryEight_ReturnsCapable()
     {
-        // Arrange
-        const string modelName = "qwen3:1.7b";
-
-        // Act
-        var result = ToolCapabilityResolver.Resolve(modelName);
-
-        // Assert
-        Assert.Equal(ToolCallingTier.Limited, result);
+        var result = ToolCapabilityResolver.Resolve("qwen3:8b");
+        Assert.Equal(ToolCallingTier.Capable, result);
     }
 
-    // -------------------------------------------------------------------------
-    // 3. integer < 3 → Limited
-    // -------------------------------------------------------------------------
-
     [Fact]
-    public void Resolve_IntegerLessThanThree_ReturnsLimited()
+    public void Resolve_FourteenB_ReturnsCapable()
     {
-        // Arrange
-        const string modelName = "gemma2:2b";
-
-        // Act
-        var result = ToolCapabilityResolver.Resolve(modelName);
-
-        // Assert
-        Assert.Equal(ToolCallingTier.Limited, result);
+        var result = ToolCapabilityResolver.Resolve("qwen3:14b");
+        Assert.Equal(ToolCallingTier.Capable, result);
     }
 
-    // -------------------------------------------------------------------------
-    // 4. boundary 3, suffix after b → Capable
-    // -------------------------------------------------------------------------
+    [Fact]
+    public void Resolve_UppercaseEightB_ReturnsCapable()
+    {
+        var result = ToolCapabilityResolver.Resolve("QWEN3:8B");
+        Assert.Equal(ToolCallingTier.Capable, result);
+    }
 
     [Fact]
-    public void Resolve_BoundaryThreeWithSuffix_ReturnsCapable()
+    public void Resolve_TwentyTwoB_ReturnsCapable()
     {
-        // Arrange
-        const string modelName = "llama3.2:3b-instruct";
-
-        // Act
-        var result = ToolCapabilityResolver.Resolve(modelName);
-
-        // Assert
+        var result = ToolCapabilityResolver.Resolve("mistral-small:22b");
         Assert.Equal(ToolCallingTier.Capable, result);
     }
 
     // -------------------------------------------------------------------------
-    // 5. mid-range → Capable
+    // Full tier (≥ 30B)
     // -------------------------------------------------------------------------
 
     [Fact]
-    public void Resolve_MidRange_ReturnsCapable()
+    public void Resolve_BoundaryThirty_ReturnsFull()
     {
-        // Arrange
-        const string modelName = "mistral:7b";
-
-        // Act
-        var result = ToolCapabilityResolver.Resolve(modelName);
-
-        // Assert
-        Assert.Equal(ToolCallingTier.Capable, result);
+        var result = ToolCapabilityResolver.Resolve("qwen3:30b");
+        Assert.Equal(ToolCallingTier.Full, result);
     }
 
-    // -------------------------------------------------------------------------
-    // 6. boundary 8 → Full
-    // -------------------------------------------------------------------------
-
     [Fact]
-    public void Resolve_BoundaryEight_ReturnsFull()
+    public void Resolve_LargeModel_ReturnsFull()
     {
-        // Arrange
-        const string modelName = "qwen3:8b";
-
-        // Act
-        var result = ToolCapabilityResolver.Resolve(modelName);
-
-        // Assert
+        var result = ToolCapabilityResolver.Resolve("llama3:70b");
         Assert.Equal(ToolCallingTier.Full, result);
     }
 
     // -------------------------------------------------------------------------
-    // 7. two-digit → Full
-    // -------------------------------------------------------------------------
-
-    [Fact]
-    public void Resolve_TwoDigit_ReturnsFull()
-    {
-        // Arrange
-        const string modelName = "qwen3:14b";
-
-        // Act
-        var result = ToolCapabilityResolver.Resolve(modelName);
-
-        // Assert
-        Assert.Equal(ToolCallingTier.Full, result);
-    }
-
-    // -------------------------------------------------------------------------
-    // 8. case-insensitive → Full
-    // -------------------------------------------------------------------------
-
-    [Fact]
-    public void Resolve_Uppercase_ReturnsFull()
-    {
-        // Arrange
-        const string modelName = "QWEN3:8B";
-
-        // Act
-        var result = ToolCapabilityResolver.Resolve(modelName);
-
-        // Assert
-        Assert.Equal(ToolCallingTier.Full, result);
-    }
-
-    // -------------------------------------------------------------------------
-    // 9. hyphen separator → Capable
-    // -------------------------------------------------------------------------
-
-    [Fact]
-    public void Resolve_HyphenSeparator_ReturnsCapable()
-    {
-        // Arrange
-        const string modelName = "llama3.2-3b";
-
-        // Act
-        var result = ToolCapabilityResolver.Resolve(modelName);
-
-        // Assert
-        Assert.Equal(ToolCallingTier.Capable, result);
-    }
-
-    // -------------------------------------------------------------------------
-    // 10. null → Full (safe default)
+    // Defaults / edge cases
     // -------------------------------------------------------------------------
 
     [Fact]
     public void Resolve_Null_ReturnsFull()
     {
-        // Arrange
-        // modelName is null
-
-        // Act
         var result = ToolCapabilityResolver.Resolve(null);
-
-        // Assert
         Assert.Equal(ToolCallingTier.Full, result);
     }
-
-    // -------------------------------------------------------------------------
-    // 11. empty string → Full
-    // -------------------------------------------------------------------------
 
     [Fact]
     public void Resolve_Empty_ReturnsFull()
     {
-        // Arrange
-        const string modelName = "";
-
-        // Act
-        var result = ToolCapabilityResolver.Resolve(modelName);
-
-        // Assert
+        var result = ToolCapabilityResolver.Resolve("");
         Assert.Equal(ToolCallingTier.Full, result);
     }
-
-    // -------------------------------------------------------------------------
-    // 12. no Nb pattern → Full
-    // -------------------------------------------------------------------------
 
     [Fact]
     public void Resolve_NoParamPattern_ReturnsFull()
     {
-        // Arrange
-        const string modelName = "mystery-model";
-
-        // Act
-        var result = ToolCapabilityResolver.Resolve(modelName);
-
-        // Assert
+        var result = ToolCapabilityResolver.Resolve("mystery-model");
         Assert.Equal(ToolCallingTier.Full, result);
     }
-
-    // -------------------------------------------------------------------------
-    // 13. negative lookahead guard — "3bit" is not "3b" → Full
-    // -------------------------------------------------------------------------
 
     [Fact]
     public void Resolve_BitSuffix_ReturnsFull()
     {
-        // Arrange
-        const string modelName = "qwen3:3bit";
-
-        // Act
-        var result = ToolCapabilityResolver.Resolve(modelName);
-
-        // Assert
+        // Negative lookahead guard — "3bit" is not "3b"
+        var result = ToolCapabilityResolver.Resolve("qwen3:3bit");
         Assert.Equal(ToolCallingTier.Full, result);
     }
 }

@@ -151,7 +151,7 @@ public class ToolPromptFormatterTests
         };
 
         // Act
-        var result = _formatter.Format(tools, "qwen3:1.7b");
+        var result = _formatter.Format(tools, "Qwen3.5:4B");  // Limited tier (4 ≤ size < 8)
 
         // Assert
         Assert.Contains("- write_file:", result);
@@ -175,7 +175,7 @@ public class ToolPromptFormatterTests
         };
 
         // Act
-        var result = _formatter.Format(tools, "qwen3:1.7b");
+        var result = _formatter.Format(tools, "Qwen3.5:4B");  // Limited tier (4 ≤ size < 8)
 
         // Assert
         Assert.Contains(
@@ -198,7 +198,7 @@ public class ToolPromptFormatterTests
         };
 
         // Act
-        var result = _formatter.Format(tools, "mistral:7b");
+        var result = _formatter.Format(tools, "qwen3:8b");  // Capable tier (8 ≤ size < 30)
 
         // Assert
         Assert.Contains("- edit_file:", result);
@@ -216,7 +216,7 @@ public class ToolPromptFormatterTests
         var tools = Array.Empty<ToolDefinition>();
 
         // Act
-        var result = _formatter.Format(tools, "qwen3:1.7b");
+        var result = _formatter.Format(tools, "Qwen3.5:4B");  // Limited tier (4 ≤ size < 8)
 
         // Assert
         Assert.Equal(string.Empty, result);
@@ -238,7 +238,7 @@ public class ToolPromptFormatterTests
         };
 
         // Act
-        var result = _formatter.Format(tools, "qwen3:1.7b");
+        var result = _formatter.Format(tools, "Qwen3.5:4B");  // Limited tier (4 ≤ size < 8)
 
         // Assert
         Assert.DoesNotContain("- github_bulk_update:", result);
@@ -263,7 +263,7 @@ public class ToolPromptFormatterTests
         };
 
         // Act
-        var result = _formatter.Format(tools, "qwen3:1.7b");
+        var result = _formatter.Format(tools, "Qwen3.5:4B");  // Limited tier (4 ≤ size < 8)
 
         // Assert
         Assert.Contains(
@@ -287,7 +287,7 @@ public class ToolPromptFormatterTests
         };
 
         // Act
-        var result = _formatter.Format(tools, "qwen3:1.7b");
+        var result = _formatter.Format(tools, "Qwen3.5:4B");  // Limited tier (4 ≤ size < 8)
 
         // Assert
         Assert.Contains("Recommended workflow", result);
@@ -308,7 +308,7 @@ public class ToolPromptFormatterTests
         };
 
         // Act
-        var result = _formatter.Format(tools, "qwen3:1.7b");
+        var result = _formatter.Format(tools, "Qwen3.5:4B");  // Limited tier (4 ≤ size < 8)
 
         // Assert
         Assert.Contains("- flexible_tool:", result);
@@ -329,7 +329,7 @@ public class ToolPromptFormatterTests
         };
 
         // Act
-        var result = _formatter.Format(tools, "mistral:7b");
+        var result = _formatter.Format(tools, "qwen3:8b");  // Capable tier (8 ≤ size < 30)
 
         // Assert
         Assert.Contains("- flexible_tool:", result);
@@ -352,7 +352,7 @@ public class ToolPromptFormatterTests
         };
 
         // Act
-        var result = _formatter.Format(tools, "qwen3:14b");
+        var result = _formatter.Format(tools, "llama3:70b");  // Full tier (≥ 30B)
 
         // Assert
         Assert.Contains("- read_text_file:", result);
@@ -377,11 +377,33 @@ public class ToolPromptFormatterTests
         };
 
         // Act
-        var result = _formatter.Format(tools, "qwen3:1.7b");
+        var result = _formatter.Format(tools, "Qwen3.5:4B");  // Limited tier (4 ≤ size < 8)
 
         // Assert
         Assert.Contains("- no_schema_tool: No parameters", result);
         Assert.DoesNotContain("REQUIRED", result);
         Assert.DoesNotContain("optional", result);
+    }
+
+    // -------------------------------------------------------------------------
+    // 13. ChatOnly tier (< 4B) → all tools suppressed, returns empty string
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void Format_ChatOnlyTier_ReturnsEmpty()
+    {
+        // Arrange — multiple tools of different complexity
+        var tools = new[]
+        {
+            MakeTool("read_text_file", SimpleSchema),
+            MakeTool("flexible_tool",  ModerateSchema),
+            MakeTool("edit_file",      EditFileSchema, desc: "Edit a file"),
+        };
+
+        // Act — qwen3:1.7b is ChatOnly tier (< 4B)
+        var result = _formatter.Format(tools, "qwen3:1.7b");
+
+        // Assert — no tools exposed; the planner is short-circuited upstream
+        Assert.Equal(string.Empty, result);
     }
 }

@@ -46,7 +46,8 @@ public class EntityExtractor
         }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Failed to generate embedding for entity '{Name}'. Entity will be saved without embedding.", entity.Name);
+            _logger?.LogWarning("Failed to generate embedding for entity '{Name}'. Entity will be saved without embedding.", entity.Name);
+            _logger?.LogDebug(ex, "Embedding generation exception details for entity '{Name}'", entity.Name);
             return null;
         }
     }
@@ -76,17 +77,20 @@ public class EntityExtractor
             }
             catch (HttpRequestException ex)
             {
-                _logger?.LogWarning(ex, "Local LLM call failed with HTTP error. Trying cloud fallback.");
+                _logger?.LogWarning("Local LLM call failed with HTTP error ({Message}). Trying cloud fallback.", ex.Message);
+                _logger?.LogDebug(ex, "HTTP exception details for local LLM extraction");
                 result = await TryCloudFallbackAsync(extractionPrompt, cancellationToken);
             }
             catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
-                _logger?.LogWarning(ex, "Local LLM call timed out. Trying cloud fallback.");
+                _logger?.LogWarning("Local LLM call timed out (>60s). Trying cloud fallback.");
+                _logger?.LogDebug(ex, "Timeout exception details for local LLM extraction");
                 result = await TryCloudFallbackAsync(extractionPrompt, cancellationToken);
             }
             catch (JsonException ex)
             {
-                _logger?.LogWarning(ex, "Local LLM returned malformed response. Trying cloud fallback.");
+                _logger?.LogWarning("Local LLM returned malformed response ({Message}). Trying cloud fallback.", ex.Message);
+                _logger?.LogDebug(ex, "JSON parse exception details for local LLM extraction");
                 result = await TryCloudFallbackAsync(extractionPrompt, cancellationToken);
             }
         }

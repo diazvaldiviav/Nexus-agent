@@ -411,7 +411,7 @@ public class AgentServicePermissionGateTests : IAsyncLifetime
         var planner = new SingleStepPlanner(toolName);
 
         var config = new NexusConfig();
-        config.Models.Local.Model = "qwen3:1.7b";  // small model
+        config.Models.Local.Model = "Qwen3.5:4B";  // Limited tier (small but ≥4B; ChatOnly is bypassed entirely)
 
         var agent = CreateAgent(
             lastUserMsg => lastUserMsg.Contains("[PLANNER]")
@@ -457,7 +457,7 @@ public class AgentServicePermissionGateTests : IAsyncLifetime
         var planner = new SingleStepPlanner(toolName);
 
         var config = new NexusConfig();
-        config.Models.Local.Model = "qwen3:1.7b";  // small model
+        config.Models.Local.Model = "Qwen3.5:4B";  // Limited tier (small but ≥4B; ChatOnly is bypassed entirely)
 
         var agent = CreateAgent(
             lastUserMsg => lastUserMsg.Contains("[PLANNER]")
@@ -495,7 +495,7 @@ public class AgentServicePermissionGateTests : IAsyncLifetime
         var planner = new SingleStepPlanner(toolName);
 
         var config = new NexusConfig();
-        config.Models.Local.Model = "qwen3:1.7b";  // small model → AutoApprovePermissionGate denies
+        config.Models.Local.Model = "Qwen3.5:4B";  // Limited tier (small but ≥4B; ChatOnly is bypassed entirely) → AutoApprovePermissionGate denies
 
         var autoApproveGate = new AutoApprovePermissionGate(config);
 

@@ -43,19 +43,36 @@ public class DIFactoryTests : IDisposable
     [Fact]
     public void DI_OllamaProvider_ResolvesOllamaEmbeddingService()
     {
-        // Arrange
-        var config = new NexusConfig
+        // Isolate cloud API key env vars: with Provider=ollama and no key
+        // configured, the factory must return the bare OllamaEmbeddingService.
+        // A host-set GEMINI_API_KEY / GOOGLE_API_KEY / OPENAI_API_KEY would
+        // otherwise wrap the result in FallbackEmbeddingService.
+        var origGemini = Environment.GetEnvironmentVariable("GEMINI_API_KEY");
+        var origGoogle = Environment.GetEnvironmentVariable("GOOGLE_API_KEY");
+        var origOpenAi = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        try
         {
-            Embeddings = new EmbeddingsConfig { Provider = "ollama" }
-        };
+            Environment.SetEnvironmentVariable("GEMINI_API_KEY", null);
+            Environment.SetEnvironmentVariable("GOOGLE_API_KEY", null);
+            Environment.SetEnvironmentVariable("OPENAI_API_KEY", null);
 
-        var (provider, _) = BuildServices(config);
+            var config = new NexusConfig
+            {
+                Embeddings = new EmbeddingsConfig { Provider = "ollama" }
+            };
 
-        // Act
-        var embeddingService = provider.GetRequiredService<IEmbeddingService>();
+            var (provider, _) = BuildServices(config);
 
-        // Assert
-        Assert.IsType<OllamaEmbeddingService>(embeddingService);
+            var embeddingService = provider.GetRequiredService<IEmbeddingService>();
+
+            Assert.IsType<OllamaEmbeddingService>(embeddingService);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEMINI_API_KEY", origGemini);
+            Environment.SetEnvironmentVariable("GOOGLE_API_KEY", origGoogle);
+            Environment.SetEnvironmentVariable("OPENAI_API_KEY", origOpenAi);
+        }
     }
 
     [Fact]

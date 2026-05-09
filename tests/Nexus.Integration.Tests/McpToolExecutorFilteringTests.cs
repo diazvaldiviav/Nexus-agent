@@ -98,15 +98,15 @@ public class McpToolExecutorFilteringTests
         var formatter = new ToolPromptFormatter(new ToolComplexityClassifier());
         var executor = CreateExecutor(registry, filteringEnabled: true, formatter);
 
-        // Act
-        var result = executor.GetToolDefinitionsForPrompt("qwen3:1b");
+        // Act — qwen3:5b is Limited tier (4 ≤ size < 8); ChatOnly (<4B) would suppress all tools.
+        var result = executor.GetToolDefinitionsForPrompt("qwen3:5b");
 
         // Assert — formatter output differs from raw registry (includes "Available tools:" header)
         Assert.NotEmpty(result);
         Assert.Contains("read_file", result);
         // Formatter produces its own format; verify it's not identical to raw registry
-        // (for a simple tool with a 1b model = Limited tier, the tool is still included but format differs)
-        var formatterResult = formatter.Format(registry.Tools.Values, "qwen3:1b");
+        // (for a simple tool with a 5b model = Limited tier, the tool is still included but format differs)
+        var formatterResult = formatter.Format(registry.Tools.Values, "qwen3:5b");
         Assert.Equal(formatterResult, result);
     }
 

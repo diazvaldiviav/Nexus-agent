@@ -44,6 +44,17 @@ public sealed class ToolPromptFormatter
         var modelTier = ToolCapabilityResolver.Resolve(modelName);
         _logger?.LogInformation("Tool filtering: model '{ModelName}' resolved to tier {Tier}", modelName, modelTier);
 
+        // ChatOnly tier: model is too small to reliably emit tool-call JSON.
+        // Return empty so the planner skip path in AgentService kicks in and the
+        // legacy chat loop runs without any tools exposed to the prompt.
+        if (modelTier == ToolCallingTier.ChatOnly)
+        {
+            _logger?.LogInformation(
+                "Tool filtering: ChatOnly tier — suppressing all {Count} tool definitions",
+                toolList.Count);
+            return string.Empty;
+        }
+
         var classified = toolList
             .Select(t => (tool: t, score: _classifier.Classify(t)))
             .ToList();

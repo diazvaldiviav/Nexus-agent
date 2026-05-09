@@ -183,6 +183,11 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<LlmProviderFactory>();
 
+        services.AddSingleton<OutputFidelityVerifier>(sp => new OutputFidelityVerifier(
+            config,
+            sp.GetService<ILogger<OutputFidelityVerifier>>(),
+            sp.GetService<IEmbeddingService>()));   // optional — substring works alone
+
         services.AddSingleton<IToolPlanner>(sp => new ToolPlanner(
             sp.GetRequiredService<LlmProviderFactory>(),
             config,
@@ -213,6 +218,7 @@ public static class ServiceCollectionExtensions
             toolVerifier: sp.GetService<IToolVerifier>(),
             permissionGate: sp.GetService<IPermissionGate>(),         // optional — registered by CLI/Desktop
             verificationCatalog: sp.GetService<IVerificationCatalog>(), // optional — registered by Connectors
+            outputFidelityVerifier: sp.GetService<OutputFidelityVerifier>(), // optional — Layer 4 fidelity check
             toolExecutor: sp.GetService<IToolExecutor>(),
             argumentValidator: sp.GetService<IToolArgumentValidator>(),
             schemaValidator: sp.GetService<ISchemaValidator>(),

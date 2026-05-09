@@ -212,6 +212,48 @@ public class McpConfig
     /// </summary>
     public int PlannerHeuristicMinLength { get; set; } = 16;
 
+    // Layer 4 — Output Fidelity Verifier
+
+    /// <summary>
+    /// When true, Layer 4 verifies LLM summary fidelity against read_* tool results
+    /// after plan execution. Default true. Requires (optionally) IEmbeddingService for
+    /// the embedding component; absent service degrades to substring-only.
+    /// </summary>
+    public bool OutputFidelityVerificationEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Minimum hybrid fidelity score (0.0-1.0) required for the summary to pass.
+    /// Default 0.45. Range 0.0-0.95, validator-enforced.
+    /// </summary>
+    /// <remarks>
+    /// Calibration history: original default 0.30 (Sprint 10 L4) was tuned against
+    /// the sprint_plan.md reproducer where the hallucination scored hybrid≈0.24.
+    /// Field testing (2026-05-09) showed that hallucinations imitating the file's
+    /// format/domain (HTML, Markdown, JSON) reach embedding cosine ≥0.7, so with
+    /// default weights 0.4/0.6 the hybrid stays ≥0.42 even when substring=0.0.
+    /// Threshold raised to 0.45 to flag those cases. Tunable per deployment.
+    /// </remarks>
+    public float OutputFidelityMinScore { get; set; } = 0.45f;
+
+    /// <summary>
+    /// Weight of the substring n-gram score in the hybrid combination. Default 0.4.
+    /// Range 0.0-1.0; must sum with EmbeddingWeight to 1.0 ± 0.01.
+    /// </summary>
+    public float OutputFidelitySubstringWeight { get; set; } = 0.4f;
+
+    /// <summary>
+    /// Weight of the embedding cosine similarity in the hybrid combination. Default 0.6.
+    /// Range 0.0-1.0; must sum with SubstringWeight to 1.0 ± 0.01.
+    /// </summary>
+    public float OutputFidelityEmbeddingWeight { get; set; } = 0.6f;
+
+    /// <summary>
+    /// Maximum number of LLM retries when the fidelity check fails. Default 1. Range 0-3.
+    /// When exceeded, a [FidelityWarning] sentinel is emitted and the output is suffixed
+    /// with a warning so the user knows the response may be unreliable.
+    /// </summary>
+    public int OutputFidelityMaxRetries { get; set; } = 1;
+
     public List<McpServerEntry> Servers { get; set; } = new();
 }
 

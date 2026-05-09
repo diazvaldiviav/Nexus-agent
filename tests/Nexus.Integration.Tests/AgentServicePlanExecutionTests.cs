@@ -165,6 +165,51 @@ public class AgentServicePlanExecutionTests : IAsyncLifetime
         return agent;
     }
 
+    /// <summary>
+    /// Overload that accepts a factory function receiving the full conversation history,
+    /// allowing tests to inspect the complete message history passed to the LLM.
+    /// </summary>
+    private AgentService CreateAgent(
+        Func<IReadOnlyList<ConversationMessage>, string> llmResponseFactory,
+        IToolPlanner? toolPlanner = null,
+        IToolExecutor? toolExecutor = null,
+        NexusConfig? config = null)
+    {
+        // AC-H1: disable Phase 9/10 defaults — tests assert exact LLM call counts, [PLANNER] prompt
+        // body strings, conversation-history shape, and step-retry sentinels from Phase 8.3;
+        // PlannerContext injection or [VerificationWarning] decoration would break those assertions.
+        // PlannerHeuristicEnabled is also disabled because test messages are intentionally short
+        // (e.g. "Read a file") and the heuristic would block the planner before it could be tested.
+        config ??= new NexusConfig();
+        config.Mcp.PlannerContextEnabled = false;
+        config.Mcp.ToolVerificationEnabled = false;
+        config.Mcp.ToolPlanningEnabled = true;
+        config.Mcp.PlannerHeuristicEnabled = false;
+
+        var search = new SemanticSearch(_connectionString);
+        var memoryBuilder = new MemoryContextBuilder(_graph, search);
+        var promptBuilder = new PromptBuilder(memoryBuilder, config.Agent, toolExecutor);
+        var modelRouter = new ModelRouter(config.Models.Routing);
+        var entityExtractor = new EntityExtractor(_graph);
+        var summarizer = new InteractionSummarizer(_graph);
+        var fakeProvider = FakeLlmProvider.CreateWithHistoryFactory("ollama", llmResponseFactory);
+        var providerFactory = new LlmProviderFactory(new ILlmProvider[] { fakeProvider });
+
+        var agent = new AgentService(
+            config,
+            _graph,
+            promptBuilder,
+            modelRouter,
+            entityExtractor,
+            providerFactory,
+            summarizer,
+            toolPlanner: toolPlanner,
+            toolExecutor: toolExecutor);
+
+        _lastAgent = agent;
+        return agent;
+    }
+
     // ──────────────────────────────────────────────────────────────────────────
     // Test 1: PlanEnabled_ExecutesStepsOneByOne
     // ──────────────────────────────────────────────────────────────────────────
@@ -934,6 +979,199 @@ public class AgentServicePlanExecutionTests : IAsyncLifetime
     // Layer 3 (Sprint 10 follow-up): Skip detection + grounding injection E2E
     // ──────────────────────────────────────────────────────────────────────────
 
+    // ──────────────────────────────────────────────────────────────────────────
+    // Layer 4 (Sprint 10 Layer 4 / AC-L4-2): Fidelity verification E2E tests
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// E2E: fake LLM returns a hallucinated summary on first call; fidelity verifier
+    /// detects divergence (low hybrid score) and injects grounding; second LLM call
+    /// returns a quoted summary that passes. Final response must NOT contain the
+    /// [FidelityWarning] suffix.
+    /// </summary>
+    [Fact]
+    public async Task LlmHallucinatesAfterReadTool_FidelityVerifierRetries_SucceedsOnSecondAttempt()
+    {
+        // Arrange: 1-step plan using read_text_file (so Layer 4 fires)
+        var plan = new ToolPlan(
+            new[] { new ToolPlanStep(1, "Read the sprint plan", "read_text_file", 1.0f) },
+            "Read plan");
+
+        var toolPlanner = new FakeToolPlanner(plan);
+
+        // Tool returns a short but distinct real file body (> 50 chars)
+        var actualFileContent =
+            "## Planificación Scrum para E-commerce Básico\n\n" +
+            "### Current content: pending to verification";
+
+        var toolExecutor = new TrackingToolExecutor(
+            handler: (_, toolName, _) => actualFileContent);
+
+        // LLM response sequence (keyed by call order):
+        //   Call 1: step instruction → tool call
+        //   Call 2: first summary request → hallucinated
+        //   Call 3: retry summary (after grounding injected) → quoted text
+        var llmCallCount = 0;
+        const string hallucinatedSummary =
+            "The sprint plan outlines goals: develop a full e-commerce platform with Category, " +
+            "Product and User models in C#. Key tasks include React frontend with Tailwind CSS, " +
+            "shopping cart and authentication module.";
+        const string quotedSummary =
+            "The file sprint_plan.md is short and contains: '## Planificación Scrum para E-commerce Básico'. " +
+            "The content says 'pending to verification' — only a placeholder exists.";
+
+        string? groundingUserMsg = null;
+
+        var agent = CreateAgentWithFidelityVerifier(
+            llmResponseFactory: lastUserMsg =>
+            {
+                llmCallCount++;
+                // Step instruction → tool call
+                if (lastUserMsg.Contains("[PLANNER]") && lastUserMsg.Contains("read_text_file"))
+                    return """[TOOL_CALL: {"name":"read_text_file","arguments":{"path":"/sprint_plan.md"}}]""";
+
+                // Capture [FidelityWarning] grounding if present (fidelity retry path)
+                if (lastUserMsg.Contains("[FidelityWarning]"))
+                {
+                    groundingUserMsg = lastUserMsg;
+                    return quotedSummary;  // corrected summary on retry
+                }
+
+                // First summary call: hallucinate
+                return hallucinatedSummary;
+            },
+            toolPlanner: toolPlanner,
+            toolExecutor: toolExecutor,
+            // Use differentiated embeddings: tool text gets vector A, hallucination gets zero vector
+            embeddingFactory: text =>
+            {
+                if (text.Contains("Planificación") || text.Contains("pending"))
+                    return Enumerable.Repeat(0.8f, 768).ToArray();
+                return new float[768]; // zero vector → cosine = 0 → hallucination fails
+            },
+            minScore: 0.10f);  // low threshold so quoted summary easily passes
+
+        // Act
+        var response = await agent.ChatAsync("que dice el sprint_plan.md?");
+
+        // Assert: retry happened (grounding was injected)
+        Assert.NotNull(groundingUserMsg);
+        Assert.Contains("[FidelityWarning]", groundingUserMsg!);
+
+        // Final response is the quoted (corrected) summary, no warning suffix
+        Assert.Contains("pending to verification", response.Content);
+        Assert.DoesNotContain("[FidelityWarning] This summary may contain", response.Content);
+    }
+
+    /// <summary>
+    /// E2E: fake LLM hallucinates on BOTH the initial and retry summary calls.
+    /// Retries exhausted → output must contain the [FidelityWarning] suffix.
+    /// SummaryFailureAnalyzer must also count FidelityWarnings = 1 from the injected sentinel.
+    /// </summary>
+    [Fact]
+    public async Task LlmHallucinatesAfterReadTool_RetriesExhausted_OutputContainsWarningSuffix()
+    {
+        // Arrange
+        var plan = new ToolPlan(
+            new[] { new ToolPlanStep(1, "Read the sprint plan", "read_text_file", 1.0f) },
+            "Read plan");
+
+        var toolPlanner = new FakeToolPlanner(plan);
+
+        var actualFileContent =
+            "## Planificación Scrum para E-commerce Básico\n\n" +
+            "### Current content: pending to verification";
+
+        var toolExecutor = new TrackingToolExecutor(
+            handler: (_, toolName, _) => actualFileContent);
+
+        const string hallucinatedSummary =
+            "The sprint plan outlines goals: develop a full e-commerce platform with Category, " +
+            "Product and User models in C#. Key tasks include React frontend with Tailwind CSS, " +
+            "shopping cart and authentication module.";
+
+        // Always return hallucinated summary (even on retry)
+        var agent = CreateAgentWithFidelityVerifier(
+            llmResponseFactory: lastUserMsg =>
+            {
+                if (lastUserMsg.Contains("[PLANNER]") && lastUserMsg.Contains("read_text_file"))
+                    return """[TOOL_CALL: {"name":"read_text_file","arguments":{"path":"/sprint_plan.md"}}]""";
+                return hallucinatedSummary;  // always hallucinate
+            },
+            toolPlanner: toolPlanner,
+            toolExecutor: toolExecutor,
+            embeddingFactory: _ => new float[768],  // always zero → cosine = 0 → always fail
+            minScore: 0.10f);
+
+        // Act
+        var response = await agent.ChatAsync("que dice el sprint_plan.md?");
+
+        // Assert: warning suffix is present
+        Assert.Contains(
+            "[FidelityWarning] This summary may contain content not present in the actual file. Verify against the source.",
+            response.Content);
+
+        // Assert: conversation history contains the [FidelityWarning] sentinel injected on retry exhaustion.
+        // (SummaryFailureAnalyzer — internal — reads this sentinel; we verify the sentinel directly here.)
+        var fidelitySentinel = agent.ConversationHistory
+            .Any(m => m.Content?.Contains("[FidelityWarning]") == true
+                   && m.Content.Contains("Final summary still diverges"));
+        Assert.True(fidelitySentinel, "Expected [FidelityWarning] sentinel in conversation history");
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Layer 4 factory helper (with fidelity verifier + differentiated embeddings)
+    // ──────────────────────────────────────────────────────────────────────────
+
+    private AgentService CreateAgentWithFidelityVerifier(
+        Func<string, string> llmResponseFactory,
+        IToolPlanner? toolPlanner,
+        IToolExecutor? toolExecutor,
+        Func<string, float[]>? embeddingFactory = null,
+        float minScore = 0.30f)
+    {
+        var config = new NexusConfig();
+        config.Mcp.PlannerContextEnabled = false;
+        config.Mcp.ToolVerificationEnabled = false;
+        config.Mcp.ToolPlanningEnabled = true;
+        config.Mcp.PlannerHeuristicEnabled = false;
+        config.Mcp.OutputFidelityVerificationEnabled = true;
+        config.Mcp.OutputFidelityMinScore = minScore;
+        config.Mcp.OutputFidelitySubstringWeight = 0.4f;
+        config.Mcp.OutputFidelityEmbeddingWeight = 0.6f;
+        config.Mcp.OutputFidelityMaxRetries = 1;
+
+        var embeddingService = embeddingFactory is not null
+            ? new FakeEmbeddingService(embeddingFactory)
+            : new FakeEmbeddingService(new float[768]);
+
+        var verifier = new Nexus.Core.Services.OutputFidelityVerifier(config, embeddings: embeddingService);
+
+        var search = new SemanticSearch(_connectionString);
+        var memoryBuilder = new MemoryContextBuilder(_graph, search);
+        var promptBuilder = new PromptBuilder(memoryBuilder, config.Agent, toolExecutor);
+        var modelRouter = new ModelRouter(config.Models.Routing);
+        var entityExtractor = new EntityExtractor(_graph);
+        var summarizer = new InteractionSummarizer(_graph);
+        var fakeProvider = new FakeLlmProvider("ollama", llmResponseFactory);
+        var providerFactory = new LlmProviderFactory(new ILlmProvider[] { fakeProvider });
+
+        var agent = new AgentService(
+            config,
+            _graph,
+            promptBuilder,
+            modelRouter,
+            entityExtractor,
+            providerFactory,
+            summarizer,
+            toolPlanner: toolPlanner,
+            toolExecutor: toolExecutor,
+            outputFidelityVerifier: verifier);
+
+        _lastAgent = agent;
+        return agent;
+    }
+
     /// <summary>
     /// E2E: a plan step with MatchedToolName==null is skipped silently by AgentService;
     /// the SummaryFailureAnalyzer must detect the skip sentinel and inject a grounding
@@ -957,20 +1195,24 @@ public class AgentServicePlanExecutionTests : IAsyncLifetime
         var toolPlanner = new FakeToolPlanner(plan);
         var toolExecutor = new TrackingToolExecutor();
 
-        // Capture the LAST user message passed to the LLM (which is the final summary
-        // request — preceded by the grounding injection from SummaryFailureAnalyzer).
-        string? finalSummaryUserMsg = null;
+        // Capture the conversation history passed to the final summary LLM call.
+        // The history should contain the grounding message injected by SummaryFailureAnalyzer
+        // when it detected the "No tool matched" sentinel.
+        IReadOnlyList<ConversationMessage>? finalSummaryHistory = null;
         var llmCallCount = 0;
 
-        var agent = CreateAgent(lastUserMsg =>
+        var agent = CreateAgent(history =>
         {
             llmCallCount++;
+            var lastUserMsg = history.LastOrDefault(m => m.Role == "user")?.Content ?? "";
+
             // Step 1 — return tool call for read_text_file
             if (lastUserMsg.Contains("[PLANNER]") && lastUserMsg.Contains("read_text_file"))
                 return """[TOOL_CALL: {"name":"read_text_file","arguments":{"path":"/file.md"}}]""";
+
             // Step 2 has MatchedToolName=null → AgentService skips without calling the LLM.
-            // The final summary call is the next LLM invocation. Capture its input.
-            finalSummaryUserMsg = lastUserMsg;
+            // The final summary call is the next LLM invocation. Capture the entire history.
+            finalSummaryHistory = history;
             return "Done.";
         }, toolPlanner, toolExecutor);
 
@@ -981,11 +1223,12 @@ public class AgentServicePlanExecutionTests : IAsyncLifetime
         Assert.Single(toolExecutor.InvokedTools);
         Assert.Equal("read_text_file", toolExecutor.InvokedTools[0]);
 
-        // The final summary call's prompt must contain the grounding block — proof
-        // that SummaryFailureAnalyzer detected the skip sentinel and injected.
-        Assert.NotNull(finalSummaryUserMsg);
-        Assert.Contains("[PlanResult]", finalSummaryUserMsg!);
-        Assert.Contains("Steps skipped (no matching tool): 1", finalSummaryUserMsg!);
-        Assert.Contains("Do NOT claim success", finalSummaryUserMsg!);
+        // The final summary call's history must contain the grounding block — proof
+        // that SummaryFailureAnalyzer detected the skip sentinel and injected it.
+        Assert.NotNull(finalSummaryHistory);
+        var fullHistory = string.Join("\n", finalSummaryHistory!.Select(m => m.Content));
+        Assert.Contains("[PlanResult]", fullHistory);
+        Assert.Contains("Steps skipped (no matching tool): 1", fullHistory);
+        Assert.Contains("Do NOT claim success", fullHistory);
     }
 }

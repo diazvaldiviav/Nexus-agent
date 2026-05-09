@@ -39,6 +39,16 @@ public static class ConfigValidator
             ValidatePathValidatorStrictDistance(config.Mcp.PathValidatorStrictDistance));
         AddIfNotNull(errors, "Mcp.PlannerHeuristicMinLength",
             ValidatePlannerHeuristicMinLength(config.Mcp.PlannerHeuristicMinLength));
+        AddIfNotNull(errors, "Mcp.OutputFidelityMinScore",
+            ValidateOutputFidelityMinScore(config.Mcp.OutputFidelityMinScore));
+        AddIfNotNull(errors, "Mcp.OutputFidelitySubstringWeight",
+            ValidateOutputFidelityWeight(config.Mcp.OutputFidelitySubstringWeight, "SubstringWeight"));
+        AddIfNotNull(errors, "Mcp.OutputFidelityEmbeddingWeight",
+            ValidateOutputFidelityWeight(config.Mcp.OutputFidelityEmbeddingWeight, "EmbeddingWeight"));
+        AddIfNotNull(errors, "Mcp.OutputFidelityWeights",
+            ValidateOutputFidelityWeightSum(config.Mcp.OutputFidelitySubstringWeight, config.Mcp.OutputFidelityEmbeddingWeight));
+        AddIfNotNull(errors, "Mcp.OutputFidelityMaxRetries",
+            ValidateOutputFidelityMaxRetries(config.Mcp.OutputFidelityMaxRetries));
         AddIfNotNull(errors, "Mcp.ToolPlannerEmbeddingMatchThreshold",
             ValidateToolPlannerEmbeddingMatchThreshold(config.Mcp.ToolPlannerEmbeddingMatchThreshold));
         foreach (var (toolName, rule) in config.Permission.Tools)
@@ -114,6 +124,29 @@ public static class ConfigValidator
 
     public static string? ValidatePlannerHeuristicMinLength(int value)
         => value < 1 || value > 200 ? "PlannerHeuristicMinLength must be between 1 and 200." : null;
+
+    public static string? ValidateOutputFidelityMinScore(float value)
+        => value < 0.0f || value > 0.95f
+            ? "OutputFidelityMinScore must be between 0.0 and 0.95."
+            : null;
+
+    public static string? ValidateOutputFidelityWeight(float value, string fieldName)
+        => value < 0.0f || value > 1.0f
+            ? $"OutputFidelity{fieldName} must be between 0.0 and 1.0."
+            : null;
+
+    public static string? ValidateOutputFidelityWeightSum(float substring, float embedding)
+    {
+        var sum = substring + embedding;
+        return Math.Abs(sum - 1.0f) > 0.01f
+            ? $"OutputFidelity weights must sum to 1.0 ± 0.01 (got {sum:F2})."
+            : null;
+    }
+
+    public static string? ValidateOutputFidelityMaxRetries(int value)
+        => value < 0 || value > 3
+            ? "OutputFidelityMaxRetries must be between 0 and 3."
+            : null;
 
     public static string? ValidateToolPlannerEmbeddingMatchThreshold(float value)
         => value < 0.40f || value > 0.95f

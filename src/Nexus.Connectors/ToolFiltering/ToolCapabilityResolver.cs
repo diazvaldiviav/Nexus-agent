@@ -14,9 +14,14 @@ public static class ToolCapabilityResolver
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // Thresholds based on observed tool-calling reliability:
-    // <3B models struggle with nested JSON, <8B can handle moderate schemas.
-    internal const double LimitedModelThreshold = 3.0;
-    internal const double CapableModelThreshold = 8.0;
+    // <4B models (1.7B, 2B, 3B) cannot reliably emit valid [TOOL_CALL: {...}] JSON —
+    // they default to YAML/prose and break the parser; planner is skipped entirely.
+    // 4B-8B handle simple/moderate tools but Complex schemas are excluded.
+    // 8B-30B handle moderate schemas reliably with hints.
+    // 30B+ are full-capable for arbitrary tool use.
+    internal const double ChatOnlyModelThreshold = 4.0;
+    internal const double LimitedModelThreshold = 8.0;
+    internal const double CapableModelThreshold = 30.0;
 
     /// <summary>
     /// Resolves the tool-calling tier for the given model name.
@@ -37,6 +42,9 @@ public static class ToolCapabilityResolver
                 CultureInfo.InvariantCulture,
                 out var b))
             return ToolCallingTier.Full;
+
+        if (b < ChatOnlyModelThreshold)
+            return ToolCallingTier.ChatOnly;
 
         if (b < LimitedModelThreshold)
             return ToolCallingTier.Limited;

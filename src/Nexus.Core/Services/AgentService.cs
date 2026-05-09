@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Nexus.Core.Abstractions;
 using Nexus.Core.Config;
@@ -25,6 +27,7 @@ public class AgentService : IAgentService
     private readonly IToolVerifier? _toolVerifier;
     private readonly IPermissionGate? _permissionGate;
     private readonly IVerificationCatalog? _verificationCatalog;
+    private readonly OutputFidelityVerifier? _outputFidelityVerifier;
     private readonly IToolExecutor? _toolExecutor;
     private readonly IToolArgumentValidator? _argumentValidator;
     private readonly ISchemaValidator? _schemaValidator;
@@ -42,6 +45,29 @@ public class AgentService : IAgentService
     // PlanTrailHeaderSize = fixed overhead (original user message + plan header + final summary + slop = 4).
     private const int PlanTrailExtractionWindow = 3;
     private const int PlanTrailHeaderSize = 4;
+
+    // ChatOnly tier detection (cross-layer constraint: must stay in sync with
+    // Nexus.Connectors.ToolFiltering.ToolCapabilityResolver thresholds).
+    // Models below 4B parameters cannot reliably emit valid [TOOL_CALL: {...}] JSON,
+    // so the planner is short-circuited and the legacy chat loop runs without tools.
+    private const double ChatOnlyParamThreshold = 4.0;
+    private static readonly Regex ModelParamRegex = new(
+        @"(\d+(?:\.\d+)?)\s*b(?![a-z])",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static bool IsChatOnlyModel(string? modelName)
+    {
+        if (string.IsNullOrWhiteSpace(modelName)) return false;
+        var match = ModelParamRegex.Match(modelName);
+        if (!match.Success) return false;
+        if (!double.TryParse(
+                match.Groups[1].Value,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out var b))
+            return false;
+        return b < ChatOnlyParamThreshold;
+    }
 
     private static string BuildStepPrompt(int attempt, ToolPlanStep step, JsonElement? schema)
     {
@@ -171,6 +197,7 @@ public class AgentService : IAgentService
         IToolVerifier? toolVerifier = null,
         IPermissionGate? permissionGate = null,
         IVerificationCatalog? verificationCatalog = null,
+        OutputFidelityVerifier? outputFidelityVerifier = null,
         IToolExecutor? toolExecutor = null,
         IToolArgumentValidator? argumentValidator = null,
         ISchemaValidator? schemaValidator = null,
@@ -191,6 +218,7 @@ public class AgentService : IAgentService
         _toolVerifier = toolVerifier;
         _permissionGate = permissionGate;
         _verificationCatalog = verificationCatalog;
+        _outputFidelityVerifier = outputFidelityVerifier;
         _toolExecutor = toolExecutor;
         _argumentValidator = argumentValidator;
         _schemaValidator = schemaValidator;
@@ -228,6 +256,16 @@ public class AgentService : IAgentService
                 systemPrompt, _conversationHistory, modelConfig, cancellationToken)
                 .ConfigureAwait(false);
 
+        // ChatOnly tier short-circuit: models <4B can't reliably emit tool-call JSON,
+        // so we skip the planner entirely and let the legacy chat loop run with no tools.
+        var isChatOnly = IsChatOnlyModel(modelConfig.Model);
+        if (isChatOnly)
+        {
+            _logger?.LogInformation(
+                "[ChatOnly] Skipping planner + tool execution for model '{Model}' (< 4B params)",
+                modelConfig.Model);
+        }
+
         // Plan-then-execute path (opt-in; falls through to normal loop on null plan)
         // [DIAG-P9] log entry preconditions
         _logger?.LogInformation(
@@ -239,7 +277,7 @@ public class AgentService : IAgentService
             _config.Mcp.PlannerContextEnabled,
             _conversationHistory.Count);
 
-        if (_toolPlanner is not null && _toolExecutor is not null && _toolExecutor.HasTools)
+        if (!isChatOnly && _toolPlanner is not null && _toolExecutor is not null && _toolExecutor.HasTools)
         {
             var heuristicAllow = true;
             if (_config.Mcp.PlannerHeuristicEnabled)
@@ -424,6 +462,16 @@ public class AgentService : IAgentService
                 systemPrompt, _conversationHistory, modelConfig, cancellationToken)
                 .ConfigureAwait(false);
 
+        // ChatOnly tier short-circuit: models <4B can't reliably emit tool-call JSON,
+        // so we skip the planner entirely and let the legacy stream loop run with no tools.
+        var isChatOnlyStream = IsChatOnlyModel(modelConfig.Model);
+        if (isChatOnlyStream)
+        {
+            _logger?.LogInformation(
+                "[ChatOnly] Skipping planner + tool execution for model '{Model}' (< 4B params)",
+                modelConfig.Model);
+        }
+
         // Plan-then-execute path (opt-in; falls through to normal streaming loop on null plan)
         // [DIAG-P9] log entry preconditions
         _logger?.LogInformation(
@@ -435,7 +483,7 @@ public class AgentService : IAgentService
             _config.Mcp.PlannerContextEnabled,
             _conversationHistory.Count);
 
-        if (_toolPlanner is not null && _toolExecutor is not null && _toolExecutor.HasTools)
+        if (!isChatOnlyStream && _toolPlanner is not null && _toolExecutor is not null && _toolExecutor.HasTools)
         {
             var heuristicAllow = true;
             if (_config.Mcp.PlannerHeuristicEnabled)
@@ -657,6 +705,14 @@ public class AgentService : IAgentService
 
                 if (toolCall is null)
                 {
+                    // Diagnostic at Debug level: parser rejection of an attempt is rare in normal
+                    // operation. Per-attempt markers ("[Planning Step N/M attempt A/B: ...]") at
+                    // Information already signal exhaustion; the reply body is only useful when
+                    // diagnosing why a step actually failed, so it's gated behind LogLevel.Debug.
+                    _logger?.LogDebug(
+                        "[PlanStep {N}] attempt {A} parser rejected reply (length={Len}, first 200 chars): {Reply}",
+                        step.StepNumber, attempt, reply.Length,
+                        reply.Length > 200 ? reply[..200] + "..." : reply);
                     _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = reply });
                     attempt++;
                     continue;
@@ -711,6 +767,27 @@ public class AgentService : IAgentService
                     Role = "user",
                     Content = $"[Tool result for step {step.StepNumber}]\n{toolResult}"
                 });
+
+                // Fix I: schema rejection retry. The schema validator returned an error string
+                // instead of executing the tool. Counts against the per-step attempt budget
+                // and lets SummaryFailureAnalyzer (Fix H) tally [SchemaValidationError] separately.
+                if (toolResult.StartsWith("[SchemaValidationError]", StringComparison.Ordinal)
+                    && attempt < maxAttempts)
+                {
+                    _logger?.LogInformation(
+                        "Plan step {n} attempt {attempt}: schema rejected; retrying with corrective grounding",
+                        step.StepNumber, attempt);
+                    _conversationHistory.Add(new ConversationMessage
+                    {
+                        Role = "user",
+                        Content = $"[PlanStep {step.StepNumber}] Previous tool call had wrong arguments. " +
+                                  $"The schema validator returned: {toolResult}\n" +
+                                  $"Re-emit the [TOOL_CALL: ...] line with the correct argument names and types."
+                    });
+                    attempt++;
+                    continue;
+                }
+
                 stepCompleted = true;
             }
 
@@ -739,9 +816,11 @@ public class AgentService : IAgentService
                 Role = "user",
                 Content = grounding
             });
-            _logger?.LogInformation("[PlanResult] {V} verification, {R} retries, {T} tool errors, {P} permission, {D} doom",
+            _logger?.LogInformation(
+                "[PlanResult] {V} verification, {R} retries, {T} tool errors, {P} permission, {D} doom, {S} skipped, {F} fidelity, {SR} schema",
                 findings.VerificationWarnings, findings.RetriesExhausted, findings.ToolErrors,
-                findings.PermissionDenials, findings.DoomLoops);
+                findings.PermissionDenials, findings.DoomLoops, findings.StepsSkippedNoToolMatch,
+                findings.FidelityWarnings, findings.SchemaRejections);
         }
 
         _conversationHistory.Add(new ConversationMessage
@@ -769,6 +848,86 @@ public class AgentService : IAgentService
                     ModelUsed = $"{modelConfig.Provider}/{modelConfig.Model}",
                     DurationMs = (int)sw.ElapsedMilliseconds
                 };
+            }
+        }
+
+        // Honesty filter: if the LLM emitted a [TOOL_CALL: ...] literal as its final summary,
+        // it confused "describe what happened" with "execute the action again". The tool was NOT
+        // invoked (the parser only runs inside the per-step attempt loop), so presenting the
+        // tool-call text to the user as if it were a result would be a lie. Replace the response
+        // with an honest failure note before Layer 4 runs (Layer 4 would otherwise see the file
+        // content embedded in the tool-call's `content` field and pass spuriously).
+        if (finalResponse.Contains("[TOOL_CALL:", StringComparison.Ordinal))
+        {
+            _logger?.LogWarning(
+                "[FinalSummary] LLM emitted [TOOL_CALL:] as text — replacing with honest failure note (response length: {Len})",
+                finalResponse.Length);
+            finalResponse =
+                "I attempted this operation but was unable to invoke the tool through the MCP " +
+                "protocol — my response contained a tool-call format as text rather than an actual " +
+                "invocation. The action did NOT complete. No file was written, modified, or deleted. " +
+                "You may retry, or rephrase the request.";
+        }
+
+        // AC-L4-2: Layer 4 output fidelity verification + bounded retry.
+        // Runs BEFORE committing finalResponse to history so a corrected summary replaces the
+        // original. Only fires when verifier is registered AND read tools were invoked AND summary ≥ 50 chars.
+        if (_outputFidelityVerifier is not null && _config.Mcp.OutputFidelityVerificationEnabled)
+        {
+            var readResults = ExtractReadToolResults(plan);
+            if (readResults.Count > 0 && finalResponse.Length >= 50)
+            {
+                var maxRetries = Math.Max(0, _config.Mcp.OutputFidelityMaxRetries);
+                for (int attempt = 0; attempt <= maxRetries; attempt++)
+                {
+                    FidelityResult? fidelityResult;
+                    try
+                    {
+                        fidelityResult = await _outputFidelityVerifier
+                            .VerifyAsync(readResults, finalResponse, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        _logger?.LogWarning(ex, "[FidelityVerifier] threw — skipping verification");
+                        break;
+                    }
+
+                    if (fidelityResult is null)
+                    {
+                        _logger?.LogInformation("[FidelityVerifier] skipped (returned null — pre-flight guard or scoring exception)");
+                        break;
+                    }
+
+                    _logger?.LogInformation(
+                        "[FidelityVerifier] attempt {Attempt}/{Max} hybrid={Hybrid:F2} sub={Sub:F2} emb={Emb:F2} threshold={Threshold:F2} passed={Passed}",
+                        attempt + 1, maxRetries + 1,
+                        fidelityResult.HybridScore, fidelityResult.SubstringScore, fidelityResult.EmbeddingScore,
+                        _config.Mcp.OutputFidelityMinScore, fidelityResult.Passed);
+
+                    if (fidelityResult.Passed)
+                        break;
+
+                    if (attempt < maxRetries)
+                    {
+                        var grounding = BuildFidelityGroundingMessage(fidelityResult, readResults);
+                        _conversationHistory.Add(new ConversationMessage
+                        {
+                            Role = "user",
+                            Content = grounding
+                        });
+                        finalResponse = await CallLlmAsync(systemPrompt, modelConfig, ct).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        _conversationHistory.Add(new ConversationMessage
+                        {
+                            Role = "user",
+                            Content = $"{SyntheticMarkers.FidelityWarningPrefix}Final summary still diverges from tool results after {maxRetries} retries (score={fidelityResult.HybridScore:F2})."
+                        });
+                        finalResponse += "\n\n[FidelityWarning] This summary may contain content not present in the actual file. Verify against the source.";
+                    }
+                }
             }
         }
 
@@ -838,6 +997,20 @@ public class AgentService : IAgentService
 
         var totalSteps = plan.Steps.Count;
 
+        // Emit a single compact plan summary at the start so the user sees what will happen.
+        // Per-step attempt markers are suppressed (each attempt is logged at Information level
+        // instead) — the user only sees the plan once and then the natural assistant answer.
+        var planSummary = new System.Text.StringBuilder();
+        planSummary.AppendLine("**Plan:**");
+        for (int i = 0; i < plan.Steps.Count; i++)
+        {
+            var s = plan.Steps[i];
+            var toolName = s.MatchedToolName ?? "(no tool matched)";
+            planSummary.AppendLine($"{i + 1}. `{toolName}` — {s.Description}");
+        }
+        planSummary.AppendLine();
+        yield return planSummary.ToString();
+
         // 3. Per-step execution
         foreach (var step in plan.Steps)
         {
@@ -863,7 +1036,6 @@ public class AgentService : IAgentService
             while (attempt <= maxAttempts && !stepCompleted)
             {
                 ct.ThrowIfCancellationRequested();
-                yield return $"\n[Planning Step {step.StepNumber}/{totalSteps} attempt {attempt}/{maxAttempts}: {step.Description}]\n";
                 var stepInstruction = BuildStepPrompt(attempt, step, schema);
                 _conversationHistory.Add(new ConversationMessage { Role = "user", Content = stepInstruction });
                 _logger?.LogInformation("Plan step {n}/{total} attempt {attempt}/{max}: tool={tool}",
@@ -874,6 +1046,14 @@ public class AgentService : IAgentService
 
                 if (toolCall is null)
                 {
+                    // Diagnostic at Debug level: parser rejection of an attempt is rare in normal
+                    // operation. Per-attempt markers ("[Planning Step N/M attempt A/B: ...]") at
+                    // Information already signal exhaustion; the reply body is only useful when
+                    // diagnosing why a step actually failed, so it's gated behind LogLevel.Debug.
+                    _logger?.LogDebug(
+                        "[PlanStep {N}] attempt {A} parser rejected reply (length={Len}, first 200 chars): {Reply}",
+                        step.StepNumber, attempt, reply.Length,
+                        reply.Length > 200 ? reply[..200] + "..." : reply);
                     _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = reply });
                     attempt++;
                     continue;
@@ -928,6 +1108,27 @@ public class AgentService : IAgentService
                     Role = "user",
                     Content = $"[Tool result for step {step.StepNumber}]\n{toolResult}"
                 });
+
+                // Fix I: schema rejection retry. The schema validator returned an error string
+                // instead of executing the tool. Counts against the per-step attempt budget
+                // and lets SummaryFailureAnalyzer (Fix H) tally [SchemaValidationError] separately.
+                if (toolResult.StartsWith("[SchemaValidationError]", StringComparison.Ordinal)
+                    && attempt < maxAttempts)
+                {
+                    _logger?.LogInformation(
+                        "Plan step {n} attempt {attempt}: schema rejected; retrying with corrective grounding",
+                        step.StepNumber, attempt);
+                    _conversationHistory.Add(new ConversationMessage
+                    {
+                        Role = "user",
+                        Content = $"[PlanStep {step.StepNumber}] Previous tool call had wrong arguments. " +
+                                  $"The schema validator returned: {toolResult}\n" +
+                                  $"Re-emit the [TOOL_CALL: ...] line with the correct argument names and types."
+                    });
+                    attempt++;
+                    continue;
+                }
+
                 stepCompleted = true;
             }
 
@@ -958,9 +1159,11 @@ public class AgentService : IAgentService
                 Role = "user",
                 Content = grounding
             });
-            _logger?.LogInformation("[PlanResult] {V} verification, {R} retries, {T} tool errors, {P} permission, {D} doom",
+            _logger?.LogInformation(
+                "[PlanResult] {V} verification, {R} retries, {T} tool errors, {P} permission, {D} doom, {S} skipped, {F} fidelity, {SR} schema",
                 findings.VerificationWarnings, findings.RetriesExhausted, findings.ToolErrors,
-                findings.PermissionDenials, findings.DoomLoops);
+                findings.PermissionDenials, findings.DoomLoops, findings.StepsSkippedNoToolMatch,
+                findings.FidelityWarnings, findings.SchemaRejections);
         }
 
         _conversationHistory.Add(new ConversationMessage
@@ -1022,6 +1225,98 @@ public class AgentService : IAgentService
         }
 
         var finalResponse = finalResponseBuilder.ToString();
+
+        // Honesty filter: if the LLM emitted a [TOOL_CALL: ...] literal as its final summary,
+        // it confused "describe what happened" with "execute the action again". The tool was NOT
+        // invoked (the parser only runs inside the per-step attempt loop), so presenting the
+        // tool-call text to the user as if it were a result would be a lie. Replace the response
+        // with an honest failure note before Layer 4 runs (Layer 4 would otherwise see the file
+        // content embedded in the tool-call's `content` field and pass spuriously). The user has
+        // already seen the streamed [TOOL_CALL:...] tokens, so we yield a correction notice.
+        if (finalResponse.Contains("[TOOL_CALL:", StringComparison.Ordinal))
+        {
+            _logger?.LogWarning(
+                "[FinalSummary] LLM emitted [TOOL_CALL:] as text — replacing with honest failure note (response length: {Len})",
+                finalResponse.Length);
+            const string honestFailure =
+                "\n\n[CORRECTION] The previous output contained a tool-call format as text rather " +
+                "than an actual invocation. The action did NOT complete. No file was written, " +
+                "modified, or deleted. You may retry, or rephrase the request.";
+            yield return honestFailure;
+            finalResponse =
+                "I attempted this operation but was unable to invoke the tool through the MCP " +
+                "protocol — my response contained a tool-call format as text rather than an actual " +
+                "invocation. The action did NOT complete. No file was written, modified, or deleted. " +
+                "You may retry, or rephrase the request.";
+        }
+
+        // AC-L4-2 (streaming): Layer 4 output fidelity verification + bounded retry.
+        // Per architecture decision #8: retry uses non-streaming CallLlmAsync; the corrected text
+        // is emitted as a single non-streamed chunk after the original stream completes. This avoids
+        // re-streaming complexity while preserving the honesty contract.
+        if (_outputFidelityVerifier is not null && _config.Mcp.OutputFidelityVerificationEnabled)
+        {
+            var readResults = ExtractReadToolResults(plan);
+            if (readResults.Count > 0 && finalResponse.Length >= 50)
+            {
+                var maxRetries = Math.Max(0, _config.Mcp.OutputFidelityMaxRetries);
+                for (int attempt = 0; attempt <= maxRetries; attempt++)
+                {
+                    FidelityResult? fidelityResult;
+                    try
+                    {
+                        fidelityResult = await _outputFidelityVerifier
+                            .VerifyAsync(readResults, finalResponse, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        _logger?.LogWarning(ex, "[FidelityVerifier] threw — skipping verification");
+                        break;
+                    }
+
+                    if (fidelityResult is null)
+                    {
+                        _logger?.LogInformation("[FidelityVerifier] skipped (returned null — pre-flight guard or scoring exception)");
+                        break;
+                    }
+
+                    _logger?.LogInformation(
+                        "[FidelityVerifier] attempt {Attempt}/{Max} hybrid={Hybrid:F2} sub={Sub:F2} emb={Emb:F2} threshold={Threshold:F2} passed={Passed}",
+                        attempt + 1, maxRetries + 1,
+                        fidelityResult.HybridScore, fidelityResult.SubstringScore, fidelityResult.EmbeddingScore,
+                        _config.Mcp.OutputFidelityMinScore, fidelityResult.Passed);
+
+                    if (fidelityResult.Passed)
+                        break;
+
+                    if (attempt < maxRetries)
+                    {
+                        var grounding = BuildFidelityGroundingMessage(fidelityResult, readResults);
+                        _conversationHistory.Add(new ConversationMessage
+                        {
+                            Role = "user",
+                            Content = grounding
+                        });
+                        // Non-streaming re-summary call (architecture decision #8)
+                        finalResponse = await CallLlmAsync(systemPrompt, modelConfig, ct).ConfigureAwait(false);
+                        yield return finalResponse;
+                    }
+                    else
+                    {
+                        _conversationHistory.Add(new ConversationMessage
+                        {
+                            Role = "user",
+                            Content = $"{SyntheticMarkers.FidelityWarningPrefix}Final summary still diverges from tool results after {maxRetries} retries (score={fidelityResult.HybridScore:F2})."
+                        });
+                        var warningSuffix = "\n\n[FidelityWarning] This summary may contain content not present in the actual file. Verify against the source.";
+                        finalResponse += warningSuffix;
+                        yield return warningSuffix;
+                    }
+                }
+            }
+        }
+
         _conversationHistory.Add(new ConversationMessage { Role = "assistant", Content = finalResponse });
         _turnCount++;
 
@@ -1182,8 +1477,7 @@ public class AgentService : IAgentService
 
             if (outcome.WasCorrected)
             {
-                _logger?.LogInformation("[PathValidator] Tool '{Tool}' corrected: {Note}", toolCall.Name, outcome.ErrorMessage);
-                Console.Error.WriteLine($"[PathValidator] Corrected: {outcome.ErrorMessage}");
+                _logger?.LogDebug("[PathValidator] Tool '{Tool}' corrected: {Note}", toolCall.Name, outcome.ErrorMessage);
             }
 
             effectiveArguments = outcome.CorrectedArguments;
@@ -1323,6 +1617,80 @@ public class AgentService : IAgentService
         var afterPrefix = warningResult.Substring(SyntheticMarkers.VerificationWarningPrefix.Length);
         var newlineIdx = afterPrefix.IndexOf('\n');
         return newlineIdx > 0 ? afterPrefix.Substring(0, newlineIdx) : afterPrefix;
+    }
+
+    /// <summary>
+    /// Extracts the textual content of read-tool invocations from <see cref="_conversationHistory"/>
+    /// that belong to steps in <paramref name="plan"/> whose <c>MatchedToolName</c> starts with
+    /// <c>"read_"</c>. Looks for the well-known "[Tool result for step N]" envelope format.
+    /// </summary>
+    private List<string> ExtractReadToolResults(ToolPlan plan)
+    {
+        var results = new List<string>();
+
+        var readSteps = plan.Steps
+            .Where(s => s.MatchedToolName is not null
+                     && s.MatchedToolName.StartsWith("read_", StringComparison.Ordinal))
+            .Select(s => s.StepNumber)
+            .ToHashSet();
+
+        if (readSteps.Count == 0)
+            return results;
+
+        foreach (var msg in _conversationHistory)
+        {
+            if (string.IsNullOrEmpty(msg.Content))
+                continue;
+
+            if (!msg.Content.StartsWith("[Tool result for step ", StringComparison.Ordinal))
+                continue;
+
+            var bracketEnd = msg.Content.IndexOf(']');
+            if (bracketEnd < 0)
+                continue;
+
+            var header = msg.Content[..(bracketEnd + 1)];
+            var match = System.Text.RegularExpressions.Regex.Match(header, @"step (\d+)");
+            if (!match.Success)
+                continue;
+
+            if (!int.TryParse(match.Groups[1].Value, out var stepNum))
+                continue;
+
+            if (!readSteps.Contains(stepNum))
+                continue;
+
+            var newlineIdx = msg.Content.IndexOf('\n');
+            var body = newlineIdx >= 0 ? msg.Content[(newlineIdx + 1)..] : "";
+            if (!string.IsNullOrWhiteSpace(body))
+                results.Add(body);
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Builds a grounding message injected into conversation history when fidelity verification
+    /// fails. Includes score breakdown, actual tool result(s), and instructions to re-summarize.
+    /// </summary>
+    private static string BuildFidelityGroundingMessage(
+        FidelityResult result,
+        IReadOnlyList<string> readResults)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"{SyntheticMarkers.FidelityWarningPrefix}Your previous summary diverges from the actual tool results.");
+        sb.AppendLine($"Hybrid fidelity score: {result.HybridScore:F2} (substring={result.SubstringScore:F2}, embedding={result.EmbeddingScore:F2}). Threshold: 0.30.");
+        sb.AppendLine();
+        sb.AppendLine("Actual tool result(s):");
+        sb.AppendLine("---");
+        var combined = string.Join("\n---\n", readResults);
+        sb.AppendLine(combined.Length > 2000 ? combined[..2000] + "...[truncated]" : combined);
+        sb.AppendLine("---");
+        sb.AppendLine();
+        sb.AppendLine("Re-summarize using ONLY the content above. Quote exact phrases when possible.");
+        sb.AppendLine("Do NOT add facts inferred from prior conversation context.");
+        sb.Append("If the file is short or empty, say so explicitly.");
+        return sb.ToString();
     }
 
     /// <summary>

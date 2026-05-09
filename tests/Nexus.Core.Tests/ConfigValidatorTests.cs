@@ -832,4 +832,69 @@ public class ConfigValidatorTests
             Assert.Null(error);
     }
 
+    // ──────────────────────────────────────────────────────────────────────────
+    // AC-L4-5 — OutputFidelity config defaults and validators
+    // ──────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void OutputFidelityVerificationEnabled_DefaultIsTrue()
+    {
+        var config = new McpConfig();
+        Assert.True(config.OutputFidelityVerificationEnabled);
+    }
+
+    [Fact]
+    public void OutputFidelityMinScore_DefaultIs045()
+    {
+        var config = new McpConfig();
+        Assert.Equal(0.45f, config.OutputFidelityMinScore);
+    }
+
+    [Theory]
+    [InlineData(-0.01f, true)]   // below min → error
+    [InlineData(0.0f,   false)]  // at min boundary → ok
+    [InlineData(0.45f,  false)]  // default → ok
+    [InlineData(0.95f,  false)]  // at max boundary → ok
+    [InlineData(0.96f,  true)]   // above max → error
+    public void OutputFidelityMinScore_RangeValidated(float value, bool expectError)
+    {
+        var error = ConfigValidator.ValidateOutputFidelityMinScore(value);
+
+        if (expectError)
+            Assert.NotNull(error);
+        else
+            Assert.Null(error);
+    }
+
+    [Theory]
+    [InlineData(0.5f, 0.5f, false)]  // sum = 1.0 → ok
+    [InlineData(0.4f, 0.6f, false)]  // default → ok
+    [InlineData(0.3f, 0.6f, true)]   // sum = 0.9 → error
+    [InlineData(0.4f, 0.7f, true)]   // sum = 1.1 → error
+    public void OutputFidelityWeights_SumToOne_Enforced(float substring, float embedding, bool expectError)
+    {
+        var error = ConfigValidator.ValidateOutputFidelityWeightSum(substring, embedding);
+
+        if (expectError)
+            Assert.NotNull(error);
+        else
+            Assert.Null(error);
+    }
+
+    [Theory]
+    [InlineData(-1,  true)]   // below min → error
+    [InlineData(0,   false)]  // at min boundary → ok
+    [InlineData(1,   false)]  // default → ok
+    [InlineData(3,   false)]  // at max boundary → ok
+    [InlineData(4,   true)]   // above max → error
+    public void OutputFidelityMaxRetries_RangeValidated(int value, bool expectError)
+    {
+        var error = ConfigValidator.ValidateOutputFidelityMaxRetries(value);
+
+        if (expectError)
+            Assert.NotNull(error);
+        else
+            Assert.Null(error);
+    }
+
 }

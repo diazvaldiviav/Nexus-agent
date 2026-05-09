@@ -8,8 +8,9 @@ namespace Nexus.Core.Services;
 
 /// <summary>
 /// Non-interactive <see cref="IPermissionGate"/> for Desktop/headless hosts.
-/// Full-tier models (≥8B params) are auto-approved with a warning.
-/// Small-tier models (&lt;8B params) are auto-denied to enforce the Hard Safety Invariant.
+/// Full-tier models (≥30B params) are auto-approved with a warning.
+/// All other tiers (ChatOnly &lt;4B, Limited &lt;8B, Capable &lt;30B) are auto-denied to
+/// enforce the Hard Safety Invariant in non-interactive mode.
 /// <para>
 /// NOTE: Tier detection is inlined here (duplicating <c>Nexus.Connectors.ToolFiltering.ToolCapabilityResolver</c>)
 /// because <c>Nexus.Core</c> must not reference <c>Nexus.Connectors</c> (layer boundary rule).
@@ -23,8 +24,12 @@ public sealed class AutoApprovePermissionGate : IPermissionGate
         @"(\d+(?:\.\d+)?)\s*b(?![a-z])",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    private const double LimitedModelThreshold = 3.0;
-    private const double CapableModelThreshold = 8.0;
+    // Cross-layer constraint: must stay character-identical to
+    // Nexus.Connectors.ToolFiltering.ToolCapabilityResolver thresholds (Sprint 11
+    // cleanup candidate: extract IModelTierResolver to a shared abstraction layer).
+    private const double ChatOnlyModelThreshold = 4.0;
+    private const double LimitedModelThreshold = 8.0;
+    private const double CapableModelThreshold = 30.0;
 
     private readonly NexusConfig _config;
     private readonly ILogger<AutoApprovePermissionGate>? _logger;
@@ -62,7 +67,7 @@ public sealed class AutoApprovePermissionGate : IPermissionGate
 
     // ── Tier detection (private) ──────────────────────────────────────────────
 
-    private enum ToolTier { Limited, Capable, Full }
+    private enum ToolTier { ChatOnly, Limited, Capable, Full }
 
     private static bool IsFullTier(string? modelName)
         => ResolveToolTier(modelName) == ToolTier.Full;
@@ -82,6 +87,9 @@ public sealed class AutoApprovePermissionGate : IPermissionGate
                 CultureInfo.InvariantCulture,
                 out var b))
             return ToolTier.Full;
+
+        if (b < ChatOnlyModelThreshold)
+            return ToolTier.ChatOnly;
 
         if (b < LimitedModelThreshold)
             return ToolTier.Limited;

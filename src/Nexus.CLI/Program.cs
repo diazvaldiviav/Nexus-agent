@@ -59,7 +59,7 @@ if (!validationResult.IsValid)
 
 // ── Phase 4: DI setup ──
 var services = new ServiceCollection();
-services.AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Information)); // [DIAG-P9] temp: was Error
+services.AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Error));
 services.AddNexusAgent(config);
 services.AddNexusMcp();
 services.AddSingleton(sp => new PersistentPermissionStore(

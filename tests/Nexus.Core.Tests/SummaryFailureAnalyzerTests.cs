@@ -239,4 +239,116 @@ public class SummaryFailureAnalyzerTests
 
         Assert.Contains("Do NOT claim success", grounding);
     }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Test 9: OneFidelityWarning_Counted (Layer 4 — AC-L4-4)
+    // ──────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void OneFidelityWarning_Counted()
+    {
+        // Arrange — a [FidelityWarning] sentinel injected by AgentService when retries exhausted.
+        var history = new List<ConversationMessage>
+        {
+            new() { Role = "user", Content = "Read the sprint plan." },
+            new() { Role = "user", Content = "[FidelityWarning] Final summary still diverges from tool results after 1 retries (score=0.24)." }
+        };
+
+        // Act
+        var findings = SummaryFailureAnalyzer.Analyze(history);
+
+        // Assert
+        Assert.True(findings.HasFailures);
+        Assert.Equal(1, findings.FidelityWarnings);
+        Assert.Equal(0, findings.VerificationWarnings);
+        Assert.Equal(0, findings.RetriesExhausted);
+        Assert.Equal(0, findings.ToolErrors);
+        Assert.Equal(0, findings.PermissionDenials);
+        Assert.Equal(0, findings.DoomLoops);
+        Assert.Equal(0, findings.StepsSkippedNoToolMatch);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Test 10: GroundingMessage_IncludesFidelityFailures (Layer 4 — AC-L4-4)
+    // ──────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void GroundingMessage_IncludesFidelityFailures()
+    {
+        // Arrange — fidelity warning only.
+        var history = new List<ConversationMessage>
+        {
+            new() { Role = "user", Content = "[FidelityWarning] Final summary still diverges from tool results after 1 retries (score=0.24)." }
+        };
+
+        // Act
+        var findings = SummaryFailureAnalyzer.Analyze(history);
+        var grounding = SummaryFailureAnalyzer.BuildGroundingMessage(findings);
+
+        // Assert
+        Assert.Contains("[PlanResult]", grounding);
+        Assert.Contains("- Fidelity failures: 1", grounding);
+        Assert.Contains("Do NOT claim success", grounding);
+
+        // Zero-count lines must be omitted
+        Assert.DoesNotContain("Verification failures:", grounding);
+        Assert.DoesNotContain("Steps skipped:", grounding);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Test 11: OneSchemaRejection_Counted (Fix H)
+    // ──────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void OneSchemaRejection_Counted()
+    {
+        // Arrange — schema validator rejected a tool call (envelope returned by ExecuteToolWithTimeoutAsync).
+        var history = new List<ConversationMessage>
+        {
+            new() { Role = "user", Content = "Search for the config file." },
+            new() { Role = "user", Content = "[Tool result for step 1]\n[SchemaValidationError] Missing required argument 'pattern'. search_files requires: path (string, REQUIRED), pattern (string, REQUIRED), excludePatterns (array, optional)" }
+        };
+
+        // Act
+        var findings = SummaryFailureAnalyzer.Analyze(history);
+
+        // Assert
+        Assert.True(findings.HasFailures);
+        Assert.Equal(1, findings.SchemaRejections);
+        Assert.Equal(0, findings.VerificationWarnings);
+        Assert.Equal(0, findings.RetriesExhausted);
+        Assert.Equal(0, findings.ToolErrors);
+        Assert.Equal(0, findings.PermissionDenials);
+        Assert.Equal(0, findings.DoomLoops);
+        Assert.Equal(0, findings.StepsSkippedNoToolMatch);
+        Assert.Equal(0, findings.FidelityWarnings);
+        Assert.Single(findings.ExcerptedReasons);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Test 12: GroundingMessage_IncludesSchemaRejections (Fix H)
+    // ──────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void GroundingMessage_IncludesSchemaRejections()
+    {
+        // Arrange — schema rejection only.
+        var history = new List<ConversationMessage>
+        {
+            new() { Role = "user", Content = "[Tool result for step 2]\n[SchemaValidationError] Missing required argument 'content'." }
+        };
+
+        // Act
+        var findings = SummaryFailureAnalyzer.Analyze(history);
+        var grounding = SummaryFailureAnalyzer.BuildGroundingMessage(findings);
+
+        // Assert
+        Assert.Contains("[PlanResult]", grounding);
+        Assert.Contains("- Schema validation rejections: 1", grounding);
+        Assert.Contains("Do NOT claim success", grounding);
+
+        // Zero-count lines must be omitted
+        Assert.DoesNotContain("Verification failures:", grounding);
+        Assert.DoesNotContain("Fidelity failures:", grounding);
+    }
 }

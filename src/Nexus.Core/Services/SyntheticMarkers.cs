@@ -18,6 +18,12 @@ internal static class SyntheticMarkers
     /// <summary>Marker with a trailing space, used as a decoration prefix for the denial reason string.</summary>
     public const string PermissionDeniedPrefix = PermissionDeniedMarker + " ";
 
+    /// <summary>Bare marker token injected when Layer 4 output fidelity verification determines the LLM summary diverges from read-tool results.</summary>
+    public const string FidelityWarningMarker = "[FidelityWarning]";
+
+    /// <summary>Marker with a trailing space, used as a decoration prefix in fidelity-grounding and final-warning strings.</summary>
+    public const string FidelityWarningPrefix = FidelityWarningMarker + " ";
+
     public static readonly string[] Prefixes =
     {
         "[PLANNER] ",
@@ -28,7 +34,8 @@ internal static class SyntheticMarkers
         "[Executing tool: ",
         "[DoomLoop]",
         VerificationWarningMarker,
-        PermissionDeniedMarker
+        PermissionDeniedMarker,
+        FidelityWarningMarker
     };
 
     /// <summary>

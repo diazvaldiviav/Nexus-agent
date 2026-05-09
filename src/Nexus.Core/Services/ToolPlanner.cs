@@ -77,14 +77,35 @@ public sealed class ToolPlanner : IToolPlanner
         "Update", or "Edit" without explicitly naming the tool. Every step is one
         tool call.
 
+        READ-ONLY INTENT RULE — if the user is only asking to view, read, show,
+        list, find, search, describe, summarize, or check something (verbs like
+        "ver", "leer", "mostrar", "listar", "qué dice", "qué contiene", "buscar",
+        "show", "read", "view", "list", "find", "search", "describe", "what does",
+        "what is in"), the plan MUST consist EXCLUSIVELY of read-only tools
+        (typically prefixed `read_`, `list_`, `get_`, `search_`, or
+        `directory_tree`). NEVER include `write_*`, `edit_*`, `delete_*`, `move_*`,
+        `create_directory`, or any tool that modifies state. If a write/delete
+        tool is needed to fulfill the user's request, the user must have
+        explicitly asked to write/edit/delete/move — do not infer it.
+
         GOOD examples:
+          (write intent — user said "modify config.yaml to set port=80")
           Step 1: Use `read_text_file` to retrieve the current content of config.yaml
           Step 2: Use `write_file` to save the modified content back to config.yaml
+
+          (read intent — user said "what does index.html say")
+          Step 1: Use `read_text_file` to retrieve the content of index.html
 
         BAD examples (DO NOT WRITE — these will be rejected):
           Step 1: Read the file                  ← missing tool name
           Step 2: Insert the new section         ← natural verb, no tool
           Step 3: Save the changes               ← natural verb, no tool
+
+          (read intent — user said "puedes ver lo que dice index.html")
+          Step 1: Use `read_text_file` to retrieve the content of index.html
+          Step 2: Use `write_file` to save the modified content back to index.html
+                                                  ← write_file unsolicited;
+                                                    user only asked to read
 
         Output between 1 and 5 steps. Each step is exactly one tool invocation.
 

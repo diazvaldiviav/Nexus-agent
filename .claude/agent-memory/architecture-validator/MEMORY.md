@@ -193,6 +193,15 @@
   - Codebase confirmed: DisposeAsync currently iterates _clients directly without .ToArray() — .ToArray() fix is correct
   - Codebase confirmed: McpToolCallLoopTests.CreateAgent takes 4 params; overload with NexusConfig? config = null is additive (non-breaking)
 
+- Sprint 10 Layer 4 (OutputFidelityVerifier + AgentService retry loop + SummaryFailureAnalyzer extension): APPROVED (0 HIGH, 0 MEDIUM, 2 LOW)
+  - File: docs/validation/sprint-10-layer-4-validation.md
+  - LOW-1: ConfigureAwait(false) reminder — architecture already shows this correctly; implementer must apply to all awaits in VerifyAsync and both wire-in blocks
+  - LOW-2: ConfigValidatorTests naming ambiguity — `OutputFidelityMinScore_DefaultIs030` is listed in sprint doc but architecture §13.20 collapses it under entry 16; implementer must create BOTH tests as separate methods (defaults check + range Theory)
+  - Codebase verified: `ExtractReadToolResults` must take `ToolPlan plan` as explicit param (no `_currentPlan` field in AgentService)
+  - Codebase verified: `FakeEmbeddingService` must be copied locally to `tests/Nexus.Core.Tests/Fakes/` (avoid cross-test-project reference)
+  - AC Fidelity: 100% — all 80+ concrete values match exactly, including verbatim log templates, sentinel strings, and validator messages
+  - AgentService now has 20 constructor parameters (was 19); 13th is `OutputFidelityVerifier? outputFidelityVerifier = null`
+
 - US-4.6 + US-4.4 (Desktop Tests + Empty State UI): APPROVED Round 2 (0 HIGH, 0 MEDIUM, 2 LOW carry-forward)
   - File: docs/validation/US-4.6-4.4-validation.md
   - All 3 HIGH and 1 MEDIUM issues from Round 1 confirmed fixed in revised architecture doc

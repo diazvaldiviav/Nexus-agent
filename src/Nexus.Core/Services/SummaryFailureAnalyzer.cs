@@ -18,11 +18,14 @@ internal static class SummaryFailureAnalyzer
         int PermissionDenials,
         int DoomLoops,
         int StepsSkippedNoToolMatch,
+        int FidelityWarnings,
+        int SchemaRejections,
         IReadOnlyList<string> ExcerptedReasons)
     {
         public bool HasFailures =>
             VerificationWarnings > 0 || RetriesExhausted > 0 || ToolErrors > 0 ||
-            PermissionDenials > 0 || DoomLoops > 0 || StepsSkippedNoToolMatch > 0;
+            PermissionDenials > 0 || DoomLoops > 0 || StepsSkippedNoToolMatch > 0 ||
+            FidelityWarnings > 0 || SchemaRejections > 0;
     }
 
     /// <summary>
@@ -32,7 +35,7 @@ internal static class SummaryFailureAnalyzer
     public static Findings Analyze(IReadOnlyList<ConversationMessage>? history)
     {
         if (history is null)
-            return new Findings(0, 0, 0, 0, 0, 0, Array.Empty<string>());
+            return new Findings(0, 0, 0, 0, 0, 0, 0, 0, Array.Empty<string>());
 
         int verificationWarnings = 0;
         int retriesExhausted = 0;
@@ -40,6 +43,8 @@ internal static class SummaryFailureAnalyzer
         int permissionDenials = 0;
         int doomLoops = 0;
         int stepsSkippedNoToolMatch = 0;
+        int fidelityWarnings = 0;
+        int schemaRejections = 0;
         var reasons = new List<string>();
 
         foreach (var message in history)
@@ -83,6 +88,16 @@ internal static class SummaryFailureAnalyzer
                 stepsSkippedNoToolMatch++;
                 reasons.Add(Excerpt(content));
             }
+            else if (content.Contains(SyntheticMarkers.FidelityWarningMarker, StringComparison.Ordinal))
+            {
+                fidelityWarnings++;
+                reasons.Add(Excerpt(content));
+            }
+            else if (content.Contains("[SchemaValidationError]", StringComparison.Ordinal))
+            {
+                schemaRejections++;
+                reasons.Add(Excerpt(content));
+            }
         }
 
         // Keep at most the 3 most recent reasons
@@ -95,6 +110,8 @@ internal static class SummaryFailureAnalyzer
             permissionDenials,
             doomLoops,
             stepsSkippedNoToolMatch,
+            fidelityWarnings,
+            schemaRejections,
             trimmedReasons);
     }
 
@@ -122,6 +139,10 @@ internal static class SummaryFailureAnalyzer
             sb.AppendLine($"- Doom loops: {findings.DoomLoops}");
         if (findings.StepsSkippedNoToolMatch > 0)
             sb.AppendLine($"- Steps skipped (no matching tool): {findings.StepsSkippedNoToolMatch}");
+        if (findings.SchemaRejections > 0)
+            sb.AppendLine($"- Schema validation rejections: {findings.SchemaRejections}");
+        if (findings.FidelityWarnings > 0)
+            sb.AppendLine($"- Fidelity failures: {findings.FidelityWarnings}");
 
         if (findings.ExcerptedReasons.Count > 0)
         {
